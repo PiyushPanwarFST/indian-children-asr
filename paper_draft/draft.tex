@@ -1,0 +1,395 @@
+% ============================================================
+%  MY UNDERSTANDING NOTES
+%  Topic: Indian Children Speech Recognition
+%  Base Paper: CARE (Dutta & Ganapathy, IEEE TASLP 2025)
+% ============================================================
+
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{titlesec}
+\usepackage{mdframed}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning,
+                fit, backgrounds, calc}
+
+% ── Colors ──────────────────────────────────────────────────
+\definecolor{pathA}{RGB}{41, 128, 185}
+\definecolor{pathB}{RGB}{192, 57, 43}
+\definecolor{pathC}{RGB}{39, 174, 96}
+\definecolor{frozen}{RGB}{200, 200, 200}
+\definecolor{trains}{RGB}{241, 196, 15}
+\definecolor{lossclr}{RGB}{230, 126, 34}
+\definecolor{notebg}{RGB}{255, 249, 230}
+\definecolor{headclr}{RGB}{44, 62, 80}
+
+% ── Section styling ─────────────────────────────────────────
+\titleformat{\section}{\large\bfseries\color{headclr}}
+  {\thesection}{1em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries\color{headclr}}
+  {\thesubsection}{1em}{}
+
+% ── Note box ────────────────────────────────────────────────
+\newmdenv[backgroundcolor=notebg, linecolor=orange!60,
+          linewidth=1.5pt, roundcorner=5pt,
+          innertopmargin=6pt, innerbottommargin=6pt]{notebox}
+
+% ── TikZ styles ─────────────────────────────────────────────
+\tikzset{
+  box/.style={rectangle, rounded corners=4pt,
+    minimum width=3.2cm, minimum height=0.65cm,
+    text centered, draw, thick, font=\small},
+  frozen/.style={box, fill=frozen!60, draw=gray},
+  trains/.style={box, fill=trains!80, draw=orange!80},
+  outbox/.style={box, font=\small\bfseries},
+  lossbox/.style={box, fill=lossclr!50, draw=lossclr!90,
+    font=\small\bfseries},
+  arr/.style={->, >=Stealth, thick, line width=1.2pt}
+}
+
+% ── Title ───────────────────────────────────────────────────
+\title{
+  \textbf{My Research Notes}\\[4pt]
+  \large Indian Children Speech Recognition\\[2pt]
+  \normalsize Base Paper: CARE --- Dutta \& Ganapathy, IEEE TASLP 2025
+}
+\author{[Your Name]}
+\date{\today}
+
+% ============================================================
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{About the Project}
+% ============================================================
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Goal:} Build an ASR system specifically for Indian
+        children's speech in Hindi, Marathi, and Indian English.
+  \item \textbf{Dataset:} ASER --- 123.72 hours, 81,423 clips,
+        5,260 children aged 5--18.
+  \item \textbf{Base Paper:} CARE framework (SER) adapted for ASR.
+  \item \textbf{Target:} ICASSP 2026.
+\end{itemize}
+
+% ============================================================
+\section{ASER Dataset Summary}
+% ============================================================
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Property} & \textbf{Value} \\
+\midrule
+Total clips        & 81,423 \\
+Unique children    & 5,260 \\
+Total duration     & 123.72 hours \\
+Avg.\ clip length  & 5.47 sec \\
+Age range          & 5--18 years \\
+\midrule
+Hindi              & 15,880 clips — 53.84 hrs \\
+English (Indian)   & 60,867 clips — 47.19 hrs \\
+Marathi            &  4,421 clips — 22.39 hrs \\
+\midrule
+Rajasthan (Hindi)  & 31,114 clips — 46.17 hrs \\
+UP (Hindi)         & 31,509 clips — 44.09 hrs \\
+Maharashtra        & 18,800 clips — 33.45 hrs \\
+\midrule
+Correct readings   & 65,008 (79.8\%) \\
+Incorrect readings & 16,404 (20.2\%) \\
+\midrule
+ASR train split    & 10,939 clips — 58.16 hrs \\
+ASR dev split      &  1,404 clips —  7.68 hrs \\
+ASR test split     &  1,530 clips —  7.35 hrs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{notebox}
+\textbf{Important:} Splits are speaker-independent (split by child\_id).
+No child's voice appears in more than one split. This prevents speaker
+leakage and ensures honest WER evaluation.
+\end{notebox}
+
+% ============================================================
+\section{Understanding the CARE Paper}
+% ============================================================
+
+% ────────────────────────────────────────────────────────────
+\subsection{What CARE Does (Simple Version)}
+% ────────────────────────────────────────────────────────────
+
+CARE has \textbf{two expert listeners} looking at the same audio:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Semantic expert} --- understands the \textit{meaning}
+        of what is said (like a literature professor reading the words)
+  \item \textbf{Acoustic expert} --- understands \textit{how} it is
+        said (pitch, speed, energy --- like a music producer)
+\end{itemize}
+
+Both experts are trained at the same time. Their outputs are merged
+for the final task (emotion detection in CARE; text output in our case).
+
+% ────────────────────────────────────────────────────────────
+\subsection{Phase 1: Pre-Training}
+% ────────────────────────────────────────────────────────────
+
+\textbf{Paper location:} Section III-B, pages 3680--3681.
+
+\medskip
+\textbf{Running example:} Audio clip --- a child saying
+\textit{``Radha ke paas ek tota hai''} (5 seconds, 80,000 numbers).
+
+\medskip
+\textbf{Key idea:} Three things happen to the same audio
+simultaneously. Two paths produce the \textit{correct answers}
+(teachers). One path produces the \textit{model's attempt} (student).
+
+\bigskip
+
+% ── THE BIG PHASE 1 DIAGRAM ─────────────────────────────────
+\begin{center}
+\begin{tikzpicture}[node distance=0.55cm and 2.2cm]
+
+% ── Shared input ────────────────────────────────────────────
+\node[box, fill=gray!20, draw=gray!70, minimum width=10cm]
+  (audio) {\textbf{RAW AUDIO} \quad
+           $\mathbf{x} \in \mathbb{R}^{80000}$
+           \quad (same clip goes into all 3 paths)};
+
+% ══════════ PATH A (left) ═══════════════════════════════════
+\node[frozen, below left=1.2cm and 3.6cm of audio]
+  (whisper) {Whisper ASR\\{\scriptsize frozen}};
+
+\node[box, fill=pathA!15, draw=pathA,
+      below=0.5cm of whisper]
+  (text) {``Radha ke paas ek tota hai''\\
+          {\scriptsize plain text string}};
+
+\node[frozen, below=0.5cm of text]
+  (roberta) {RoBERTa (full, frozen)\\
+             {\scriptsize text model}};
+
+\node[box, fill=pathA!15, draw=pathA,
+      below=0.5cm of roberta]
+  (r12) {12 rows $\times$ 768 numbers\\
+         {\scriptsize one row per layer}};
+
+\node[frozen, below=0.5cm of r12]
+  (avgA) {Average Pool\\
+          {\scriptsize 12 rows $\to$ 1 row}};
+
+\node[outbox, fill=pathA!50, draw=pathA,
+      below=0.5cm of avgA]
+  (ytext) {$\mathbf{y}_\text{text} \in \mathbb{R}^{768}$\\
+           {\scriptsize \textbf{CORRECT SEMANTIC ANSWER}}};
+
+\draw[arr, color=pathA] (whisper) -- (text);
+\draw[arr, color=pathA] (text)    -- (roberta);
+\draw[arr, color=pathA] (roberta) -- (r12);
+\draw[arr, color=pathA] (r12)     -- (avgA);
+\draw[arr, color=pathA] (avgA)    -- (ytext);
+
+% Path A label
+\node[above=0.1cm of whisper, font=\small\bfseries,
+      color=pathA] {PATH A --- Semantic Teacher};
+
+% ══════════ PATH B (right) ══════════════════════════════════
+\node[frozen, below right=1.2cm and 3.6cm of audio]
+  (pase) {PASE+ (frozen)\\
+          {\scriptsize voice quality extractor}};
+
+\node[box, fill=pathB!15, draw=pathB,
+      below=0.5cm of pase]
+  (f50) {50 rows $\times$ 256 numbers\\
+         {\scriptsize 1 row every 20ms}};
+
+\node[frozen, below=0.5cm of f50]
+  (down) {Downsample $\div 2$\\
+          {\scriptsize keep every other row}};
+
+\node[outbox, fill=pathB!50, draw=pathB,
+      below=0.5cm of down]
+  (ypase) {$\mathbf{y}_\text{pase} \in \mathbb{R}^{25 \times 256}$\\
+           {\scriptsize \textbf{CORRECT ACOUSTIC ANSWER}}};
+
+\draw[arr, color=pathB] (pase) -- (f50);
+\draw[arr, color=pathB] (f50)  -- (down);
+\draw[arr, color=pathB] (down) -- (ypase);
+
+\node[above=0.1cm of pase, font=\small\bfseries,
+      color=pathB] {PATH B --- Acoustic Teacher};
+
+% ══════════ PATH C (centre) ═════════════════════════════════
+\node[trains, below=1.2cm of audio]
+  (cnn) {CNN Feature Extractor\\
+         {\scriptsize WavLM conv layers --- TRAINS}};
+
+\node[box, fill=pathC!15, draw=pathC,
+      below=0.5cm of cnn]
+  (cnnout) {$\mathbb{R}^{25 \times 768}$\\
+            {\scriptsize 25 frames, 768 dim each}};
+
+\node[trains, below=0.5cm of cnnout]
+  (common) {Common Encoder\\
+            {\scriptsize WavLM layers 1--6 --- TRAINS}\\
+            {\scriptsize phonemes, pitch, basic sounds}};
+
+\node[box, fill=pathC!15, draw=pathC,
+      below=0.5cm of common]
+  (comout) {$\mathbb{R}^{25 \times 768}$\\
+            {\scriptsize richer representations}};
+
+% Branch split
+\node[trains, fill=pathB!40, draw=pathB,
+      below left=0.8cm and 1.5cm of comout]
+  (acbr) {Acoustic Branch\\
+          {\scriptsize WavLM layers 7--12 + FC}\\
+          {\scriptsize TRAINS}};
+
+\node[trains, fill=pathA!40, draw=pathA,
+      below right=0.8cm and 1.5cm of comout]
+  (sembr) {Semantic Branch\\
+           {\scriptsize RoBERTa layers}\\
+           {\scriptsize + Conv Adapters --- TRAINS}};
+
+\node[outbox, fill=pathB!40, draw=pathB,
+      below=0.6cm of acbr]
+  (yachat) {$\hat{\mathbf{y}}_\text{acoust}
+             \in \mathbb{R}^{25 \times 256}$\\
+            {\scriptsize Model's acoustic attempt}};
+
+\node[outbox, fill=pathA!40, draw=pathA,
+      below=0.6cm of sembr]
+  (ysemhat) {$\hat{\mathbf{y}}_\text{sem}
+              \in \mathbb{R}^{768}$\\
+             {\scriptsize Model's semantic attempt}};
+
+\draw[arr, color=pathC] (cnn)    -- (cnnout);
+\draw[arr, color=pathC] (cnnout) -- (common);
+\draw[arr, color=pathC] (common) -- (comout);
+\draw[arr, color=pathB] (comout) -- (acbr);
+\draw[arr, color=pathA] (comout) -- (sembr);
+\draw[arr, color=pathB] (acbr)   -- (yachat);
+\draw[arr, color=pathA] (sembr)  -- (ysemhat);
+
+\node[above=0.1cm of cnn, font=\small\bfseries,
+      color=pathC] {PATH C --- CARE Model (Student)};
+
+% ══════════ Connect audio to all 3 paths ════════════════════
+\draw[arr, color=gray!70]
+  (audio.south) -- ++(0,-0.4) -| (whisper.north);
+\draw[arr, color=gray!70]
+  (audio.south) -- ++(0,-0.4) -- (cnn.north);
+\draw[arr, color=gray!70]
+  (audio.south) -- ++(0,-0.4) -| (pase.north);
+
+% ══════════ LOSS CALCULATION ════════════════════════════════
+\node[lossbox,
+      below=0.7cm of $(ytext)!0.5!(yachat)$,
+      xshift=1cm, minimum width=4.5cm]
+  (lsem) {$\mathcal{L}_\text{sem}$ = MSE$(
+           \mathbf{y}_\text{text},\,
+           \hat{\mathbf{y}}_\text{sem})$\\
+          {\scriptsize one number}};
+
+\node[lossbox,
+      below=0.7cm of $(ypase)!0.5!(ysemhat)$,
+      xshift=-1cm, minimum width=4.5cm]
+  (lacust) {$\mathcal{L}_\text{acoust}$ = MSE$(
+             \mathbf{y}_\text{pase},\,
+             \hat{\mathbf{y}}_\text{acoust})$\\
+            {\scriptsize one number}};
+
+\node[lossbox, fill=lossclr!80, draw=red!80,
+      below=0.7cm of $(lsem)!0.5!(lacust)$,
+      minimum width=6cm]
+  (ltot) {$\mathcal{L}_\text{total} =
+           \mathcal{L}_\text{sem} +
+           \mathcal{L}_\text{acoust}}$\\[2pt]
+         {\scriptsize Update PATH C only.
+          Teachers (A, B) stay frozen.}};
+
+\draw[arr, color=pathA]   (ytext)   |- (lsem);
+\draw[arr, color=pathA]   (ysemhat) |- (lsem);
+\draw[arr, color=pathB]   (ypase)   |- (lacust);
+\draw[arr, color=pathB]   (yachat)  |- (lacust);
+\draw[arr, color=lossclr] (lsem)    -- (ltot);
+\draw[arr, color=lossclr] (lacust)  -- (ltot);
+
+% ══════════ Legend ══════════════════════════════════════════
+\node[below=0.7cm of ltot, font=\small, align=left]
+  (legend) {
+    \textcolor{gray}{$\blacksquare$} Gray box = Frozen (never updates) \quad
+    \textcolor{orange}{$\blacksquare$} Yellow box = Trains (updates weights)\\[2pt]
+    \textcolor{pathA}{$\longrightarrow$} Blue = Semantic path \quad
+    \textcolor{pathB}{$\longrightarrow$} Red = Acoustic path \quad
+    \textcolor{pathC}{$\longrightarrow$} Green = CARE model path
+  };
+
+\end{tikzpicture}
+\end{center}
+
+\bigskip
+
+% ── Output summary table ─────────────────────────────────────
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Symbol} & \textbf{Shape} & \textbf{From} &
+\textbf{What it means} \\
+\midrule
+$\mathbf{y}_\text{text}$ & 768 numbers (1 row) &
+  RoBERTa \textit{frozen} &
+  Correct semantic answer --- sentence meaning \\[3pt]
+$\mathbf{y}_\text{pase}$ & 25 rows $\times$ 256 &
+  PASE+ \textit{frozen} &
+  Correct acoustic answer --- voice quality over time \\[3pt]
+$\hat{\mathbf{y}}_\text{sem}$ & 768 numbers (1 row) &
+  Semantic branch \textit{trains} &
+  Model's attempt at meaning \\[3pt]
+$\hat{\mathbf{y}}_\text{acoust}$ & 25 rows $\times$ 256 &
+  Acoustic branch \textit{trains} &
+  Model's attempt at voice quality \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{notebox}
+\textbf{Phase 1 conclusion:} After training on thousands of clips,
+$\mathcal{L}_\text{total} \to 0$.
+CARE now produces both a 768-dim meaning vector AND a
+$25\times256$ voice-quality grid from raw audio alone.
+Teachers (RoBERTa and PASE+) are no longer needed.
+\end{notebox}
+
+% ────────────────────────────────────────────────────────────
+\subsection{Phase 2: Fine-Tuning (Downstream Task)}
+% ────────────────────────────────────────────────────────────
+
+\textit{[To be added --- understanding in progress.]}
+
+% ============================================================
+\section{Our Proposed Architecture (Indian Children ASR)}
+% ============================================================
+
+\textit{[To be designed and added after full CARE understanding.]}
+
+% ============================================================
+\section{Planning and Next Steps}
+% ============================================================
+
+\textit{[To be added.]}
+
+% ============================================================
+\end{document}

@@ -1,0 +1,22 @@
+# Large dataset folders — too big for GitHub
+ASER-Dataset/extracted/
+ASER-Dataset/audio_clean/
+ASER-Dataset/Data/
+ASER-Dataset/.git/
+
+# PDF papers — copyright
+*.pdf
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Claude settings
+.claude/
+
+# Logs
+cleaning_log.txt
