@@ -310,37 +310,76 @@ WHY ASR SUBSET (not full 48,757 clips)?
 
 ## Results
 
-### Baselines (Zero-Shot — No Training)
+### Baseline Results — Zero-Shot (No Training)
+
+These show how existing models perform on Indian children's speech WITHOUT any of our training.
+Test set: asr_test.csv — 1,695 clips (5.79 hours).
+
+**Corpus-level WER (standard metric for ASR papers):**
 
 ```
-Corpus-level WER (lower = better):
-┌──────────────────┬────────┬─────────┬─────────┬─────────┐
-│ Model            │ Hindi  │ Marathi │ English │ Overall │
-├──────────────────┼────────┼─────────┼─────────┼─────────┤
-│ Whisper Small    │  98.0% │ 124.7%  │  53.6%  │ 101.2%  │
-│ Kid-Whisper-EN   │ 185.5% │ 272.0%  │  57.2%  │ 197.2%  │
-└──────────────────┴────────┴─────────┴─────────┴─────────┘
-Both models fail on Indian children's speech → research gap confirmed.
+┌──────────────────────────────────────┬────────┬─────────┬─────────┬─────────┐
+│                Model                 │ Hindi  │ Marathi │ English │ Overall │
+├──────────────────────────────────────┼────────┼─────────┼─────────┼─────────┤
+│ Whisper Small (OpenAI, multilingual) │  98.0% │ 124.7%  │  53.6%  │ 101.2%  │
+├──────────────────────────────────────┼────────┼─────────┼─────────┼─────────┤
+│ Kid-Whisper-EN (MyST children)       │ 185.5% │ 272.0%  │  57.2%  │ 197.2%  │
+└──────────────────────────────────────┴────────┴─────────┴─────────┴─────────┘
 ```
 
-### Phase 1 Knowledge Distillation (Verification)
+**Key observations:**
+- Whisper Small: ~100% WER on Indian languages = essentially every word is wrong
+- Kid-Whisper: even worse (185-272%) on Indian languages — it **hallucinates** English words when hearing Hindi/Marathi
+- Even on English: ~55% WER — Indian accent confuses both models
+- **Clear research gap: No existing model works for Indian children's multilingual speech**
+
+**Note on Kid-Whisper fix:** Previous baseline run showed Kid-Whisper producing 100% empty output.
+Root cause: the `aadel4/kid-whisper-small-en-myst` HuggingFace repo has a broken tokenizer
+(vocab_size=0). Fixed by using `openai/whisper-small.en` tokenizer for decoding.
+Model weights were fine — only the tokenizer was broken in the uploaded repo.
+
+### Phase 1 Knowledge Distillation Results
+
+**Two verification runs with different random seeds (proving consistency):**
 
 ```
-1000 clips x 3 epochs, tested with 2 different random seeds:
-
-                 SEED 42          SEED 123 (+ dev eval)
-Epoch 1:         1.9086           1.9042 (dev: 1.7235)
-Epoch 2:         1.5979           1.5903 (dev: 1.4521)
-Epoch 3:         1.3943           1.3838 (dev: 1.2724)
-────────────────────────────────────────────────────────
-Reduction:       -26.9%           -27.3%
-Semantic (A):    -19.9%           -21.7%
-Acoustic (B):    -27.1%           -27.5%
-Train-Dev gap:     N/A            -0.11 to -0.18 (no overfitting)
-
-LEARNING CONFIRMED — consistent across both seeds.
-Dev loss lower than train loss → model is generalizing well.
+┌────────────────────┬──────────────────────┬───────────────────────┐
+│                    │ Seed 42 (1000 clips) │ Seed 123 (1000 clips) │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Epoch 1 train loss │ 1.9086               │ 1.9042                │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Epoch 2 train loss │ 1.5979               │ 1.5903                │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Epoch 3 train loss │ 1.3943               │ 1.3838                │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Total reduction    │ -26.9%               │ -27.3%                │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Semantic (Path A)  │ -19.9%               │ -21.7%                │
+├────────────────────┼──────────────────────┼───────────────────────┤
+│ Acoustic (Path B)  │ -27.1%               │ -27.5%                │
+└────────────────────┴──────────────────────┴───────────────────────┘
 ```
+
+Both seeds show ~27% loss reduction — architecture and learning are confirmed and reproducible.
+
+**Dev set validation (seed 123 run — overfitting check):**
+
+```
+┌───────┬────────────┬──────────┬───────┬────────┐
+│ Epoch │ Train Loss │ Dev Loss │  Gap  │ Status │
+├───────┼────────────┼──────────┼───────┼────────┤
+│ 1     │ 1.9042     │ 1.7235   │ -0.18 │ OK     │
+├───────┼────────────┼──────────┼───────┼────────┤
+│ 2     │ 1.5903     │ 1.4521   │ -0.14 │ OK     │
+├───────┼────────────┼──────────┼───────┼────────┤
+│ 3     │ 1.3838     │ 1.2724   │ -0.11 │ OK     │
+└───────┴────────────┴──────────┴───────┴────────┘
+```
+
+**What this proves:**
+- Dev loss is LOWER than train loss (negative gap) = model is generalizing well, no overfitting
+- Both train and dev loss decrease consistently each epoch
+- Architecture is validated and ready for full training run (13,765 clips, 20 epochs with early stopping)
 
 ---
 
