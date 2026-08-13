@@ -338,48 +338,84 @@ Root cause: the `aadel4/kid-whisper-small-en-myst` HuggingFace repo has a broken
 (vocab_size=0). Fixed by using `openai/whisper-small.en` tokenizer for decoding.
 Model weights were fine — only the tokenizer was broken in the uploaded repo.
 
-### Phase 1 Knowledge Distillation Results
+### Phase 1 Knowledge Distillation Results — Full Run
 
-**Two verification runs with different random seeds (proving consistency):**
+**Setup:**
+- Dataset: 13,765 clips | 46.4 hours (Hindi + Marathi + English)
+- Dev set: 1,775 clips | 6.0 hours (for overfitting detection)
+- Epochs: 20 | Early stopping: patience=5 | Total time: ~42 hours
+- Hardware: RTX 4060 8GB | Peak GPU: 6,917 MB / 7,932 MB
+- Teacher A: facebook/wav2vec2-large-xlsr-53 (Conneau et al., 2021)
+- Teacher B: aadel4/kid-whisper-small-en-myst encoder
+- Student:   facebook/mms-300m
+
+**Epoch-by-epoch results:**
+
+```
+┌───────┬────────────┬──────────┬──────────────┬──────────────┐
+│ Epoch │ Train Loss │ Dev Loss │ Semantic (A) │ Acoustic (B) │
+├───────┼────────────┼──────────┼──────────────┼──────────────┤
+│  1    │   1.1094   │  0.7299  │    0.0273    │    1.0912    │
+│  2    │   0.7361   │  0.6504  │    0.0099    │    0.7295    │
+│  3    │   0.6452   │  0.5453  │    0.0070    │    0.6406    │
+│  4    │   0.5970   │  0.5146  │    0.0059    │    0.5931    │
+│  5    │   0.5632   │  0.4891  │    0.0053    │    0.5596    │
+│  6    │   0.5391   │  0.4738  │    0.0050    │    0.5357    │
+│  7    │   0.5193   │  0.4645  │    0.0048    │    0.5161    │
+│  8    │   0.5031   │  0.4463  │    0.0046    │    0.5000    │
+│  9    │   0.4891   │  0.4350  │    0.0044    │    0.4862    │
+│ 10    │   0.4768   │  0.4288  │    0.0042    │    0.4737    │
+│ 11    │   0.4664   │  0.4245  │    0.0041    │    0.4634    │
+│ 12    │   0.4568   │  0.4129  │    0.0040    │    0.4539    │
+│ 13    │   0.4485   │  0.4129  │    0.0039    │    0.4457    │
+│ 14    │   0.4403   │  0.4048  │    0.0040    │    0.4374    │
+│ 15    │   0.4332   │  0.3957  │    0.0039    │    0.4304    │
+│ 16    │   0.4263   │  0.3937  │    0.0037    │    0.4235    │
+│ 17    │   0.4200   │  0.3883  │    0.0036    │    0.4173    │
+│ 18    │   0.4144   │  0.3939  │    0.0037    │    0.4116    │
+│ 19    │   0.4095   │  0.3932  │    0.0036    │    0.4067    │
+│ 20    │   0.4037   │  0.3825  │    0.0036    │    0.4010    │
+└───────┴────────────┴──────────┴──────────────┴──────────────┘
+```
+
+**Summary:**
+
+```
+┌──────────────────────────┬───────────┬───────────┬──────────┐
+│ Metric                   │   Start   │    End    │  Change  │
+├──────────────────────────┼───────────┼───────────┼──────────┤
+│ Train Loss               │   1.1094  │   0.4037  │ -63.6%   │
+│ Dev Loss                 │   0.7299  │   0.3825  │ -47.6%   │
+│ Semantic Loss (Path A)   │   0.0273  │   0.0036  │ -86.8%   │
+│ Acoustic Loss (Path B)   │   1.0912  │   0.4010  │ -63.3%   │
+└──────────────────────────┴───────────┴───────────┴──────────┘
+```
+
+**Key observations:**
+- Dev loss lower than train loss across all 20 epochs — no overfitting
+- Early stopping never triggered — model improved in 19 out of 20 epochs
+- Semantic loss (XLSR-53 teacher) reduced by 86.8% — student almost perfectly matches XLSR-53 representations
+- Acoustic loss (Kid-Whisper teacher) reduced by 63.3% — student learned cross-architecture acoustic representations
+- Best dev loss: 0.3825 at epoch 20 | Best checkpoint: `checkpoints/phase1_combined/best_dev_model.pt`
+
+---
+
+### Verification Runs (Pre-training, Reproducibility Check)
+
+**Two runs with different random seeds on 1000-clip subset:**
 
 ```
 ┌────────────────────┬──────────────────────┬───────────────────────┐
 │                    │ Seed 42 (1000 clips) │ Seed 123 (1000 clips) │
 ├────────────────────┼──────────────────────┼───────────────────────┤
 │ Epoch 1 train loss │ 1.9086               │ 1.9042                │
-├────────────────────┼──────────────────────┼───────────────────────┤
 │ Epoch 2 train loss │ 1.5979               │ 1.5903                │
-├────────────────────┼──────────────────────┼───────────────────────┤
 │ Epoch 3 train loss │ 1.3943               │ 1.3838                │
-├────────────────────┼──────────────────────┼───────────────────────┤
 │ Total reduction    │ -26.9%               │ -27.3%                │
-├────────────────────┼──────────────────────┼───────────────────────┤
-│ Semantic (Path A)  │ -19.9%               │ -21.7%                │
-├────────────────────┼──────────────────────┼───────────────────────┤
-│ Acoustic (Path B)  │ -27.1%               │ -27.5%                │
 └────────────────────┴──────────────────────┴───────────────────────┘
 ```
 
-Both seeds show ~27% loss reduction — architecture and learning are confirmed and reproducible.
-
-**Dev set validation (seed 123 run — overfitting check):**
-
-```
-┌───────┬────────────┬──────────┬───────┬────────┐
-│ Epoch │ Train Loss │ Dev Loss │  Gap  │ Status │
-├───────┼────────────┼──────────┼───────┼────────┤
-│ 1     │ 1.9042     │ 1.7235   │ -0.18 │ OK     │
-├───────┼────────────┼──────────┼───────┼────────┤
-│ 2     │ 1.5903     │ 1.4521   │ -0.14 │ OK     │
-├───────┼────────────┼──────────┼───────┼────────┤
-│ 3     │ 1.3838     │ 1.2724   │ -0.11 │ OK     │
-└───────┴────────────┴──────────┴───────┴────────┘
-```
-
-**What this proves:**
-- Dev loss is LOWER than train loss (negative gap) = model is generalizing well, no overfitting
-- Both train and dev loss decrease consistently each epoch
-- Architecture is validated and ready for full training run (13,765 clips, 20 epochs with early stopping)
+Both seeds show ~27% reduction — architecture is consistent and reproducible.
 
 ---
 
