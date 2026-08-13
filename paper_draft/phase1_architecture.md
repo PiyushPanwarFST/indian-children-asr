@@ -26,7 +26,7 @@ No text labels needed — self-supervised representation learning.
               |               |               |
               v               v               v
      ┌────────────┐  ┌──────────────┐  ┌─────────────┐
-     │IndicWav2Vec│  │  MMS-300M    │  │ Kid-Whisper  │
+     │ XLSR-53    │  │  MMS-300M    │  │ Kid-Whisper  │
      │ Feature    │  │  Feature     │  │ Processor    │
      │ Extractor  │  │  Extractor   │  │ (mel spec)   │
      │            │  │              │  │              │
@@ -61,34 +61,34 @@ No text labels needed — self-supervised representation learning.
      1024-dim each    499 frames       real audio!
            |         1024-dim each           |
            |                |                v
-           v                |         ┌──────────────┐
-     ┌──────────┐           |         │   MASKING    │
-     │ AVG POOL │           |         │              │
-     │          │           |         │ Keep frames  │
-     │ average  │           |         │ 1 to 500     │
-     │ all 499  │     ┌─────┴─────┐   │ Throw away   │
-     │ frames   │     |           |   │ frames       │
-     │ into 1   │     v           v   │ 501 to 1500  │
-     └────┬─────┘  SEMANTIC   ACOUSTIC│ (padding     │
-          |        BRANCH     BRANCH  │  garbage)    │
-          v           |           |   └──────┬───────┘
-       Y_indic        v           v          |
-      (1, 1024)   ┌────────┐ ┌────────┐  (1, 500, 768)
-     "correct     │AVG POOL│ │LINEAR  │   500 real frames
-      semantic    │        │ │1024→768│   768-dim each
-      answer"     │average │ │        │      |
-                  │499→1   │ │per-    │      v
-                  └───┬────┘ │frame   │   Y_kid
-                      |      │project │  (1, 500, 768)
-                      v      │ion     │  "correct
-                  Y_sem_hat  └───┬────┘   acoustic
-                  (1, 1024)      |         answer"
-                  "student's     v
-                   semantic  Y_ac_hat
-                   guess"   (1, 499, 768)
-                             "student's
-                              acoustic
-                              guess"
+           v                |         ┌──────────────────────┐
+     ┌──────────┐           |         │ VALID FRAME SELECT   │
+     │ AVG POOL │           |         │                      │
+     │          │           |         │ attention_mask from   │
+     │ average  │           |         │ WhisperFeatureExtract│
+     │ all 499  │     ┌─────┴─────┐   │ identifies real vs   │
+     │ frames   │     |           |   │ padding frames.      │
+     │ into 1   │     v           v   │ Keep first 500 only. │
+     └────┬─────┘  SEMANTIC   ACOUSTIC│ Drop frames 501-1500 │
+          |        BRANCH     BRANCH  │ (silence padding)    │
+          |    (both are heads on     └──────┬───────────────┘
+          |     same MMS-300M model)         |
+          v           |           |   (1, 500, 768)
+       Y_xlsr         v           v   500 real frames
+      (1, 1024)   ┌────────┐ ┌────────┐  768-dim each
+     "XLSR-53     │AVG POOL│ │LINEAR  │      |
+      semantic    │        │ │1024→768│      v
+      target"     │499→1   │ │        │   Y_kid
+                  └───┬────┘ │per-    │  (1, 500, 768)
+                      |      │frame   │  "Kid-Whisper
+                      v      └───┬────┘   acoustic
+                  Y_sem_hat      |         target"
+                  (1, 1024)      v
+                  "student's  Y_ac_hat
+                   semantic   (1, 499, 768)
+                   guess"     "student's
+                               acoustic
+                               guess"
                       |           |
        ┌──────────────┘           └────────────────┐
        |                                           |
@@ -97,7 +97,7 @@ No text labels needed — self-supervised representation learning.
   │   SEMANTIC LOSS  │               │   ACOUSTIC LOSS    │
   │                  │               │                    │
   │ MSE(Y_sem_hat,   │               │ T = min(500, 499)  │
-  │     Y_indic)     │               │ = 499              │
+  │     Y_xlsr)      │               │ = 499              │
   │                  │               │                    │
   │ Compare 1024     │               │ MSE(Y_ac_hat[:T],  │
   │ values:          │               │     Y_kid[:T])     │
@@ -216,12 +216,12 @@ After each EPOCH:
 ┌─────────────────────────────────────────────────────────────────────┐
 │ MODEL          │ HuggingFace ID                    │ Role          │
 ├─────────────────────────────────────────────────────────────────────┤
-│ XLSR Hindi-    │ tanmaylaud/wav2vec2-large-xlsr-   │ Semantic      │
-│ Marathi        │ hindi-marathi                     │ Teacher       │
+│ XLSR-53        │ facebook/wav2vec2-large-xlsr-53   │ Semantic      │
+│                │                                   │ Teacher       │
 │                │                                   │               │
 │ Architecture:  wav2vec2 (CNN + 24 Transformer layers)              │
-│ Base model:    facebook/wav2vec2-large-xlsr-53 (53 languages)      │
-│ Fine-tuned on: Hindi + Marathi adult speech (ASR task)             │
+│ Paper:         Conneau et al., INTERSPEECH 2021                    │
+│ Pre-trained:   53 languages incl. Hindi + Marathi (Common Voice)  │
 │ Params:        315,438,720 (315M) — ALL FROZEN                    │
 │ Output dim:    1024 per frame                                      │
 │ Precision:     float16 (saves ~600MB GPU memory)                   │

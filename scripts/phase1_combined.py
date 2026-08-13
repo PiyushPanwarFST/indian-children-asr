@@ -3,8 +3,9 @@ Phase 1: Combined Multi-Teacher Knowledge Distillation (GPU-Optimized)
 
 Architecture:
   PATH A — Semantic Teacher (FROZEN, float16):
-    tanmaylaud/wav2vec2-large-xlsr-hindi-marathi (1024-dim, 315M params)
-    audio → XLSR → avg_pool → Y_indic (1, 1024)
+    facebook/wav2vec2-large-xlsr-53 (1024-dim, 315M params)
+    Conneau et al., INTERSPEECH 2021 — pre-trained on 53 languages incl. Hindi + Marathi
+    audio → XLSR-53 → avg_pool → Y_xlsr (1, 1024)
     Skipped for English clips
 
   PATH B — Acoustic Teacher (FROZEN, float16):
@@ -18,7 +19,7 @@ Architecture:
     Acoustic branch:  MMS → Linear(1024→768) → Y_acoust_hat (T, 768)
 
   Loss:
-    Hindi/Marathi: L = MSE(Y_sem_hat, Y_indic) + MSE(Y_acoust_hat, Y_kid)
+    Hindi/Marathi: L = MSE(Y_sem_hat, Y_xlsr) + MSE(Y_acoust_hat, Y_kid)
     English:       L = MSE(Y_acoust_hat, Y_kid)
 
   GPU Optimizations (RTX 4060, 8GB):
@@ -157,18 +158,23 @@ print("=" * 70)
 
 teacher_dtype = torch.float16 if DEVICE == "cuda" else torch.float32
 
-# ── PATH A: XLSR Hindi-Marathi (FROZEN, float16) ────────────────────────────
-print(f"\n  [PATH A] tanmaylaud/wav2vec2-large-xlsr-hindi-marathi...")
+# ── PATH A: XLSR-53 (FROZEN, float16) ───────────────────────────────────────
+# facebook/wav2vec2-large-xlsr-53 (Conneau et al., INTERSPEECH 2021)
+# Pre-trained on 53 languages including Hindi and Marathi from Common Voice.
+# Same architecture as TanmayLaud model but with a proper citation + public paper.
+# TanmayLaud model was fine-tuned FROM xlsr-53 → xlsr-53 is its parent model.
+print(f"\n  [PATH A] facebook/wav2vec2-large-xlsr-53 (Conneau et al., 2021)...")
 from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
 
-INDIC_ID = "tanmaylaud/wav2vec2-large-xlsr-hindi-marathi"
-indic_extractor = Wav2Vec2FeatureExtractor.from_pretrained(INDIC_ID)
-indic_model = Wav2Vec2Model.from_pretrained(INDIC_ID, torch_dtype=teacher_dtype).to(DEVICE)
-indic_model.eval()
-for p in indic_model.parameters():
+XLSR_ID = "facebook/wav2vec2-large-xlsr-53"
+xlsr_extractor = Wav2Vec2FeatureExtractor.from_pretrained(XLSR_ID)
+xlsr_model = Wav2Vec2Model.from_pretrained(XLSR_ID, torch_dtype=teacher_dtype).to(DEVICE)
+xlsr_model.eval()
+for p in xlsr_model.parameters():
     p.requires_grad = False
-indic_mem = sum(p.numel() * p.element_size() for p in indic_model.parameters()) / 1024**2
-print(f"    {sum(p.numel() for p in indic_model.parameters()):,} params | {indic_mem:.0f} MB | FROZEN {teacher_dtype}")
+xlsr_mem = sum(p.numel() * p.element_size() for p in xlsr_model.parameters()) / 1024**2
+print(f"    {sum(p.numel() for p in xlsr_model.parameters()):,} params | {xlsr_mem:.0f} MB | FROZEN {teacher_dtype}")
+print(f"    Covers Hindi + Marathi (among 53 languages) — citable: Conneau et al. 2021")
 
 # ── PATH B: Kid-Whisper encoder (FROZEN, float16) ───────────────────────────
 print(f"\n  [PATH B] aadel4/kid-whisper-small-en-myst encoder...")
@@ -243,18 +249,25 @@ print(f"  Test: {Path(test_clip['audio_path']).name} ({samples/16000:.1f}s, {tes
 
 # Path A
 with torch.no_grad():
-    inp_a = indic_extractor(test_audio, sampling_rate=16000, return_tensors="pt")
-    out_a = indic_model(inp_a.input_values.to(DEVICE, dtype=teacher_dtype))
-    Y_indic = out_a.last_hidden_state.mean(dim=1).float()
-print(f"  Path A: {out_a.last_hidden_state.shape} → avg_pool → {Y_indic.shape} ✓")
+    inp_a = xlsr_extractor(test_audio, sampling_rate=16000, return_tensors="pt")
+    out_a = xlsr_model(inp_a.input_values.to(DEVICE, dtype=teacher_dtype))
+    Y_xlsr = out_a.last_hidden_state.mean(dim=1).float()
+print(f"  Path A: {out_a.last_hidden_state.shape} → avg_pool → {Y_xlsr.shape} ✓")
 
 # Path B
+# return_attention_mask=True: WhisperFeatureExtractor returns a binary mask
+# (1=real audio frame, 0=silence padding). This is the standard HuggingFace
+# mechanism for variable-length audio with Whisper's fixed 30s encoder.
 with torch.no_grad():
-    inp_b = kw_processor(test_audio, sampling_rate=16000, return_tensors="pt")
+    inp_b = kw_processor(test_audio, sampling_rate=16000, return_tensors="pt",
+                         return_attention_mask=True)
     out_b = kw_encoder(inp_b.input_features.to(DEVICE, dtype=teacher_dtype))
-    valid_T = samples // 160 // 2
+    # attention_mask is at mel level (3000 frames). Encoder Conv1d stride=2 halves it.
+    # Sum of the downsampled mask = number of valid encoder frames.
+    enc_mask = inp_b.attention_mask[:, ::2]   # (1, 1500) — encoder-level mask
+    valid_T = int(enc_mask.sum().item())
     Y_kid = out_b.last_hidden_state[:, :valid_T, :].float()
-print(f"  Path B: {out_b.last_hidden_state.shape} → mask({valid_T}) → {Y_kid.shape} ✓")
+print(f"  Path B: {out_b.last_hidden_state.shape} → attention_mask → {Y_kid.shape} ✓")
 
 # Path C
 inp_c = mms_extractor(test_audio, sampling_rate=16000, return_tensors="pt")
@@ -267,12 +280,12 @@ print(f"  Path C: {frames.shape} → sem {Y_sem.shape}, ac {Y_ac.shape} ✓")
 # Loss + gradient check
 loss_fn = nn.MSELoss()
 T = min(Y_kid.shape[1], Y_ac.shape[1])
-L_sem = loss_fn(Y_sem, Y_indic.detach())
+L_sem = loss_fn(Y_sem, Y_xlsr.detach())
 L_ac = loss_fn(Y_ac[:, :T, :], Y_kid[:, :T, :].detach())
 L = L_sem + L_ac
 L.backward()
 
-frozen_ok = (sum(1 for p in indic_model.parameters() if p.grad is not None) == 0 and
+frozen_ok = (sum(1 for p in xlsr_model.parameters() if p.grad is not None) == 0 and
              sum(1 for p in kw_encoder.parameters() if p.grad is not None) == 0)
 trains_ok = (sum(1 for p in mms_model.parameters() if p.grad is not None) > 0 and
              sum(1 for p in proj_layer.parameters() if p.grad is not None) > 0)
@@ -310,23 +323,28 @@ print()
 
 
 def get_teacher_targets(audio_np, language):
-    """Returns (Y_indic, Y_kid). Y_indic=None for English."""
+    """Returns (Y_xlsr, Y_kid). Y_xlsr=None for English."""
     # Path B: acoustic (all languages)
+    # return_attention_mask=True uses HuggingFace's standard mechanism to identify
+    # real audio frames vs silence padding in Whisper's fixed 30s encoder output.
     with torch.no_grad():
-        kw_inp = kw_processor(audio_np, sampling_rate=16000, return_tensors="pt")
+        kw_inp = kw_processor(audio_np, sampling_rate=16000, return_tensors="pt",
+                              return_attention_mask=True)
         kw_out = kw_encoder(kw_inp.input_features.to(DEVICE, dtype=teacher_dtype))
-        valid_frames = len(audio_np) // 160 // 2
+        # Downsample attention mask from mel level (3000) to encoder level (1500)
+        enc_mask = kw_inp.attention_mask[:, ::2]
+        valid_frames = int(enc_mask.sum().item())
         Y_kid = kw_out.last_hidden_state[:, :valid_frames, :].float()
 
     # Path A: semantic (Hindi/Marathi only)
-    Y_indic = None
+    Y_xlsr = None
     if language in ("Hindi", "Marathi"):
         with torch.no_grad():
-            ind_inp = indic_extractor(audio_np, sampling_rate=16000, return_tensors="pt")
-            ind_out = indic_model(ind_inp.input_values.to(DEVICE, dtype=teacher_dtype))
-            Y_indic = ind_out.last_hidden_state.mean(dim=1).float()
+            xlsr_inp = xlsr_extractor(audio_np, sampling_rate=16000, return_tensors="pt")
+            xlsr_out = xlsr_model(xlsr_inp.input_values.to(DEVICE, dtype=teacher_dtype))
+            Y_xlsr = xlsr_out.last_hidden_state.mean(dim=1).float()
 
-    return Y_indic, Y_kid
+    return Y_xlsr, Y_kid
 
 
 def get_student_outputs(audio_np):
@@ -354,7 +372,7 @@ def evaluate_dev(dev_clips):
                 lang = clip["language"]
 
                 # Teachers
-                Y_indic, Y_kid = get_teacher_targets(audio, lang)
+                Y_xlsr, Y_kid = get_teacher_targets(audio, lang)
 
                 # Student
                 inp = mms_extractor(audio, sampling_rate=16000, return_tensors="pt")
@@ -366,8 +384,8 @@ def evaluate_dev(dev_clips):
                 T = min(Y_kid.shape[1], Y_ac_hat.shape[1])
                 L_ac = loss_fn(Y_ac_hat[:, :T, :], Y_kid[:, :T, :]).item()
 
-                if Y_indic is not None:
-                    L_sem = loss_fn(Y_sem_hat, Y_indic).item()
+                if Y_xlsr is not None:
+                    L_sem = loss_fn(Y_sem_hat, Y_xlsr).item()
                 else:
                     L_sem = 0.0
 
@@ -436,7 +454,7 @@ for epoch in range(num_epochs):
             lang = clip["language"]
 
             # Teachers (frozen, float16)
-            Y_indic, Y_kid = get_teacher_targets(audio, lang)
+            Y_xlsr, Y_kid = get_teacher_targets(audio, lang)
 
             # Student (trainable, float32)
             Y_sem_hat, Y_ac_hat = get_student_outputs(audio)
@@ -446,8 +464,8 @@ for epoch in range(num_epochs):
             L_ac = loss_fn(Y_ac_hat[:, :T, :], Y_kid[:, :T, :])
 
             # Semantic loss (Hindi/Marathi)
-            if Y_indic is not None:
-                L_sem = loss_fn(Y_sem_hat, Y_indic)
+            if Y_xlsr is not None:
+                L_sem = loss_fn(Y_sem_hat, Y_xlsr)
                 L_total = L_sem + L_ac
                 sem_v = L_sem.item()
             else:
@@ -469,7 +487,7 @@ for epoch in range(num_epochs):
 
             # Cleanup GPU
             if DEVICE == "cuda":
-                del Y_indic, Y_kid, Y_sem_hat, Y_ac_hat, L_total, L_ac
+                del Y_xlsr, Y_kid, Y_sem_hat, Y_ac_hat, L_total, L_ac
                 if sem_v > 0:
                     del L_sem
                 torch.cuda.empty_cache()
@@ -578,8 +596,11 @@ for epoch in range(num_epochs):
             }
             if ep_avg < best_loss:
                 best_loss = ep_avg
-                torch.save(ckpt_data, CKPT_DIR / "best_model.pt")
-                print(f"  Saved best: {CKPT_DIR / 'best_model.pt'}")
+                torch.save(ckpt_data, CKPT_DIR / "best_train_model.pt")
+                print(f"  Saved best (train): {CKPT_DIR / 'best_train_model.pt'}")
+            if dev_avg_losses and dev_avg_losses[-1] <= best_dev_loss:
+                torch.save(ckpt_data, CKPT_DIR / "best_dev_model.pt")
+                print(f"  Saved best (dev):   {CKPT_DIR / 'best_dev_model.pt'}")
             torch.save(ckpt_data, CKPT_DIR / f"epoch_{epoch+1}.pt")
             print(f"  Saved: {CKPT_DIR / f'epoch_{epoch+1}.pt'}")
 
