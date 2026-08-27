@@ -1,0 +1,28 @@
+# ASR Model Comparison on ASER Test Set
+# Date: 2026-08-25
+# Test set: 1695 clips (782 Hindi, 366 Marathi, 547 English)
+
+=====================================================================================
+  Model                                         Hindi    Marathi    English    Overall
+  ---------------------------------------------------------------------------
+  Whisper Small (244M)                        161.81%    170.78%     47.42%    126.83%
+  IndicConformer 600M                          39.01%     44.61%        N/A     59.90%
+  Kid-Whisper Medium MyST (769M)              454.66%    656.45%     37.35%    363.56%
+  Kid-Whisper Medium MyST+CSLU (769M)         714.32%   1083.20%     58.46%    582.31%
+=====================================================================================
+
+# Role Assignment (decided by benchmark data)
+
+  Semantic Teacher : IndicConformer 600M
+                     Best Hindi (39.01%) & Marathi (44.61%)
+                     Trained on Indian languages (22 languages)
+
+  Acoustic Teacher : Kid-Whisper Medium MyST
+                     Best English children's speech (37.35%)
+                     Fine-tuned on MyST children's speech dataset
+
+  Student          : Whisper Small
+                     General-purpose baseline, room to improve on all languages
+                     Hindi: 161.81% → target closer to 39.01%
+                     Marathi: 170.78% → target closer to 44.61%
+                     English: 47.42% → target closer to 37.35%

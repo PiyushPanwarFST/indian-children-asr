@@ -1,0 +1,26 @@
+{
+  "Hindi": {
+    "num_clips": 782,
+    "wer": 0.3901102180175674,
+    "avg_time_per_clip": 4.3105135973152295
+  },
+  "English": {
+    "num_clips": 547,
+    "wer": 1.0,
+    "avg_time_per_clip": 0.0035276465267760227
+  },
+  "Marathi": {
+    "num_clips": 366,
+    "wer": 0.4461411933497325,
+    "avg_time_per_clip": 1.4336237620786239
+  },
+  "Overall": {
+    "num_clips": 1695,
+    "wer": 0.5990288302393745,
+    "avg_time_per_clip": 2.2993849868268037
+  },
+  "total_time": 3897.5592386722565,
+  "gpu_memory_mb": "N/A (ONNX)",
+  "model_name": "indicconformer-600m",
+  "model_id": "ai4bharat/indic-conformer-600m-multilingual"
+}

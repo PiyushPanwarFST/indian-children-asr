@@ -1,0 +1,18 @@
+# Whisper Small (244M)
+# Model ID: openai/whisper-small
+# Date: 2026-08-25
+# Test set: ASER-Dataset/splits/asr_test.csv
+
+==================================================
+  Language      Clips        WER
+  -----------------------------------
+  Hindi           782    161.81%
+  Marathi         366    170.78%
+  English         547     47.42%
+  -----------------------------------
+  Overall        1695    126.83%
+==================================================
+
+  Total inference time: 1329s (22.1 min)
+  Avg time per clip:    0.78s
+  GPU memory peak:      1118 MB

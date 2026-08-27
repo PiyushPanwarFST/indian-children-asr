@@ -1,0 +1,48 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Acoustic Branch (Step 2)
+# ============================================================
+# Submit: qsub hpc/run_acoustic.pbs
+# Monitor: qstat -u 2025rcs1026
+# Output: hpc/acoustic_job.out
+# ============================================================
+
+#PBS -N acoustic_distill
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -o /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/acoustic_job.out
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+
+echo "============================================================"
+echo "  ACOUSTIC BRANCH — Full Training"
+echo "  Started: $(date)"
+echo "  Node: $(hostname)"
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)"
+echo "============================================================"
+
+# Step 2: Acoustic distillation training
+echo ""
+echo ">>> Step 2: Feature-level MSE training..."
+python scripts/acoustic/step2_acoustic_distillation.py \
+    --epochs 20 \
+    --lr 3e-5 \
+    --patience 5 \
+    --warmup_steps 500 \
+    2>&1
+
+echo ""
+echo "============================================================"
+echo "  DONE: $(date)"
+echo "============================================================"

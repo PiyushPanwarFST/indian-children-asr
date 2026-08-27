@@ -1,0 +1,53 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Semantic Branch (Step 0 + Step 1)
+# ============================================================
+# Submit: qsub hpc/run_semantic.pbs
+# Monitor: qstat -u 2025rcs1026
+# Output: hpc/semantic_job.out
+# ============================================================
+
+#PBS -N semantic_distill
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=48:00:00
+#PBS -j oe
+#PBS -o /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/semantic_job.out
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+
+echo "============================================================"
+echo "  SEMANTIC BRANCH — Full Training"
+echo "  Started: $(date)"
+echo "  Node: $(hostname)"
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)"
+echo "============================================================"
+
+# Step 0: Generate teacher transcripts for ALL Hindi/Marathi clips
+echo ""
+echo ">>> Step 0: Generating teacher transcripts..."
+python scripts/semantic/step0_generate_teacher_transcripts.py 2>&1
+
+# Step 1: Semantic distillation training
+echo ""
+echo ">>> Step 1: CTC-based training..."
+python scripts/semantic/step1_semantic_distillation.py \
+    --epochs 20 \
+    --lr 3e-5 \
+    --patience 5 \
+    --warmup_steps 500 \
+    2>&1
+
+echo ""
+echo "============================================================"
+echo "  DONE: $(date)"
+echo "============================================================"

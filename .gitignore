@@ -19,4 +19,33 @@ __pycache__/
 .claude/
 
 # Logs
-cleaning_log.txt
+logs/
+
+# SSH keys — NEVER commit these
+*.pem
+*.key
+
+# Virtual environment
+venv/
+
+# Checkpoints — too large for git
+checkpoints/
+
+# Benchmark raw data
+benchmarks/*.csv
+
+# Audio processed — too large for git
+ASER-Dataset/audio_processed/
+
+# Workspace files
+*.code-workspace
+
+# Log files
+*.log
+
+# Alignment JSON
+*.alignment.json
+HI_S1_ST_0_alignment.json
+
+# Paper drafts (WIP)
+paper_draft/

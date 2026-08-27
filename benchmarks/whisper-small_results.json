@@ -1,0 +1,26 @@
+{
+  "Hindi": {
+    "num_clips": 782,
+    "wer": 1.6180849889668145,
+    "avg_time_per_clip": 1.0917714148226296
+  },
+  "English": {
+    "num_clips": 547,
+    "wer": 0.47422303473491767,
+    "avg_time_per_clip": 0.13734817940748587
+  },
+  "Marathi": {
+    "num_clips": 366,
+    "wer": 1.7078217540436647,
+    "avg_time_per_clip": 1.0923889425934339
+  },
+  "Overall": {
+    "num_clips": 1695,
+    "wer": 1.2683216656944132,
+    "avg_time_per_clip": 0.7838991466173381
+  },
+  "total_time": 1328.864797592163,
+  "gpu_memory_mb": 1118,
+  "model_name": "whisper-small",
+  "model_id": "openai/whisper-small"
+}

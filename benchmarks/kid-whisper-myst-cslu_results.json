@@ -1,0 +1,26 @@
+{
+  "Hindi": {
+    "num_clips": 782,
+    "wer": 7.143160210415366,
+    "avg_time_per_clip": 2.3364406159466795
+  },
+  "English": {
+    "num_clips": 547,
+    "wer": 0.5845521023765996,
+    "avg_time_per_clip": 0.3233719198969644
+  },
+  "Marathi": {
+    "num_clips": 366,
+    "wer": 10.832046319018813,
+    "avg_time_per_clip": 2.991601979797655
+  },
+  "Overall": {
+    "num_clips": 1695,
+    "wer": 5.823144682776225,
+    "avg_time_per_clip": 1.8282639094158613
+  },
+  "total_time": 3099.128142118454,
+  "gpu_memory_mb": 3469,
+  "model_name": "kid-whisper-medium-myst-cslu",
+  "model_id": "aadel4/kid-whisper-medium-en-myst_cslu"
+}
