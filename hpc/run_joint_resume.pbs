@@ -1,0 +1,54 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Joint Training — RESUME from checkpoint
+# ============================================================
+# BEFORE SUBMITTING: Update the --resume path below to your
+# latest checkpoint (e.g., joint_epoch_10.pt)
+#
+# Submit: qsub hpc/run_joint_resume.pbs
+# Monitor: qstat -u 2025rcs1026
+# Live logs: tail -f ~/Indain_children_spech/hpc/joint_resume.log
+# ============================================================
+
+#PBS -N joint_resume
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=72:00:00
+#PBS -j oe
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+
+# Force Python to flush output immediately
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/joint_resume.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  JOINT TRAINING — RESUME" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u scripts/joint/joint_training.py \
+    --epochs 30 \
+    --lr 3e-5 \
+    --patience 5 \
+    --warmup_steps 500 \
+    --alpha 0.5 \
+    --resume checkpoints/joint/joint_epoch_5.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
