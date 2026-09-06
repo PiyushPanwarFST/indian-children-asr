@@ -356,7 +356,15 @@ def main():
     print(f"  Loading teacher (Kid-Whisper Medium)...")
     teacher_model = WhisperForConditionalGeneration.from_pretrained(TEACHER_MODEL)
     teacher_model.to(DEVICE).eval()
-    teacher_processor = WhisperProcessor.from_pretrained("openai/whisper-medium.en")
+    # Use teacher model's own processor. Kid-Whisper Medium is based on whisper-medium
+    # architecture, so we load processor from the same checkpoint. If not cached,
+    # fall back to whisper-small processor (feature extractor is identical across
+    # all Whisper sizes — same mel spectrogram, only tokenizer differs).
+    try:
+        teacher_processor = WhisperProcessor.from_pretrained(TEACHER_MODEL)
+    except Exception:
+        print(f"    Teacher processor not cached, using whisper-small processor (mel extractor is identical)")
+        teacher_processor = WhisperProcessor.from_pretrained(STUDENT_MODEL)
     print(f"    Teacher loaded")
 
     # ── Student processor (for mel spectrogram) ──
