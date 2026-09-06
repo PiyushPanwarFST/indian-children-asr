@@ -1,0 +1,45 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Joint Training Evaluation on Test Set
+# ============================================================
+# Submit: qsub hpc/run_joint_eval.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/joint_eval.log
+# ============================================================
+
+#PBS -N joint_eval
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=06:00:00
+#PBS -j oe
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/joint_eval.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  JOINT TRAINING — TEST SET EVALUATION" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u scripts/joint/joint_evaluate.py \
+    --per_lang 9999 \
+    --eval_set test \
+    --checkpoint checkpoints/joint/joint_best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
