@@ -356,15 +356,19 @@ def main():
     print(f"  Loading teacher (Kid-Whisper Medium)...")
     teacher_model = WhisperForConditionalGeneration.from_pretrained(TEACHER_MODEL)
     teacher_model.to(DEVICE).eval()
-    # Use teacher model's own processor. Kid-Whisper Medium is based on whisper-medium
-    # architecture, so we load processor from the same checkpoint. If not cached,
-    # fall back to whisper-small processor (feature extractor is identical across
-    # all Whisper sizes — same mel spectrogram, only tokenizer differs).
-    try:
-        teacher_processor = WhisperProcessor.from_pretrained(TEACHER_MODEL)
-    except Exception:
-        print(f"    Teacher processor not cached, using whisper-small processor (mel extractor is identical)")
-        teacher_processor = WhisperProcessor.from_pretrained(STUDENT_MODEL)
+    # Kid-Whisper Medium is English-only, based on whisper-medium architecture.
+    # It MUST use an English-only tokenizer (whisper-medium.en) for correct decoding.
+    # Using whisper-small's multilingual tokenizer gives WRONG text (different token IDs).
+    # We ship the processor locally in models/whisper-medium-en-processor/ so it works
+    # on HPC (no internet) without needing to cache whisper-medium.en separately.
+    teacher_proc_path = os.path.join(PROJECT_ROOT, "models", "whisper-medium-en-processor")
+    if os.path.exists(teacher_proc_path):
+        teacher_processor = WhisperProcessor.from_pretrained(teacher_proc_path)
+        print(f"    Teacher processor loaded from: {teacher_proc_path}")
+    else:
+        # Fallback: try downloading (works if internet available)
+        teacher_processor = WhisperProcessor.from_pretrained("openai/whisper-medium.en")
+        print(f"    Teacher processor loaded from HuggingFace")
     print(f"    Teacher loaded")
 
     # ── Student processor (for mel spectrogram) ──
