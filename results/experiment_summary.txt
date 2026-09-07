@@ -1,0 +1,149 @@
+EXPERIMENT SUMMARY — Indian Children's ASR using Knowledge Distillation
+================================================================================
+
+Test set: asr_test.csv (1695 clips: 782 Hindi, 366 Marathi, 547 English)
+WER method: corpus-level (jiwer) — standard for ASR papers
+Normalization: lowercase + remove punctuation
+Dataset: ASER (Annual Status of Education Report) — children's reading assessment
+
+================================================================================
+EXPERIMENT 1: BASELINES (Zero-Shot, No Training on ASER)
+================================================================================
+
+File: results/baselines/baseline_report.txt
+Predictions: results/baselines/*.csv
+
+These models were evaluated directly on ASER test set without any fine-tuning.
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+Whisper Small                  244M     103.6%    132.7%      46.2%    106.3%
+Kid-Whisper Medium             769M     247.6%    333.7%      37.6%    252.3%
+IndicConformer                 600M      32.4%     44.9%       N/A      36.0%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Notes:
+  - Whisper Small: multilingual, with language hints (hi/mr/en)
+  - Kid-Whisper Medium: English-only, fine-tuned on children's speech (MyST dataset)
+  - IndicConformer: 22 Indian languages, no English support
+  - Kid-Whisper's high Hindi/Marathi WER is expected (English-only decoder)
+
+================================================================================
+EXPERIMENT 2: ACOUSTIC DISTILLATION (Encoder Training with MSE Loss)
+================================================================================
+
+File: results/acoustic/three_model_hpc_epoch16_test_1695clips.txt
+Predictions: results/acoustic/three_model_hpc_epoch16_test_1695clips.csv
+
+What: Trained Whisper Small encoder to match Kid-Whisper Medium encoder features
+      using frame-level MSE loss. Projection layer (768->1024) bridges dimensions.
+      Trained on HPC, 16 epochs, all 13,765 training clips.
+      Output decoded using Whisper decoder (NOT CTC head).
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+Original Whisper Small         244M     103.6%    132.7%      46.2%    106.3%
+Kid-Whisper Medium (teacher)   769M     247.6%    333.7%      37.6%    252.3%
+Distilled Student (Wh decoder) 244M     177.4%    153.1%     131.0%    167.1%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Notes:
+  - Student output was WORSE than baseline (167.1% vs 106.3%)
+  - Reason: Whisper decoder was pre-trained on ORIGINAL encoder features
+  - Our distilled encoder produces DIFFERENT features -> decoder mismatch -> gibberish
+  - This motivated switching to CTC head in Experiment 3
+
+================================================================================
+EXPERIMENT 3: SEQUENTIAL CTC (Frozen Encoder + CTC Head)
+================================================================================
+
+File: results/semantic/ctc_eval_test_1695clips.txt
+Predictions: results/semantic/ctc_eval_test_1695clips.csv
+
+What: Replaced Whisper decoder with a CTC head (Linear 768->85).
+      Encoder FROZEN (from Experiment 2). Only CTC head trained.
+      65,365 trainable parameters. 18 epochs on full training set.
+      Ground truth transcripts as targets. Greedy CTC decoding.
+      Vocab: 85 tokens (3 special + 22 English + 60 Devanagari)
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+Kid-Whisper Medium (teacher)   769M     247.6%    333.7%      37.6%    252.3%
+Student (CTC head)             244M      78.7%     96.7%      60.5%     81.9%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Notes:
+  - First convincing results: 81.9% overall, beats Whisper Small baseline (106.3%)
+  - Hindi/Marathi much better than baseline (CTC works well with phonetic Devanagari)
+  - English worse than baseline (60.5% vs 46.2%) because CTC character-level decoding
+    has no language model, unlike Whisper's autoregressive decoder
+  - Best checkpoint at epoch 10 (patience-based early stopping)
+
+================================================================================
+EXPERIMENT 4: JOINT TRAINING (MSE + CTC Simultaneous, Warm Start)
+================================================================================
+
+File: results/joint/joint_eval_test_1695clips.txt  (on HPC)
+Predictions: results/joint/joint_eval_test_1695clips.csv  (on HPC)
+
+What: Trained encoder + projection + CTC head SIMULTANEOUSLY with combined loss:
+      total_loss = 0.5 * MSE_loss + 0.5 * CTC_loss
+      Encoder UNFROZEN (receives gradients from both losses).
+      ~89M trainable parameters. 15 epochs on full training set (13,765 clips).
+      Early stopping at epoch 15 (best WER at epoch 10: 16.8% dev).
+
+      WARM START: Encoder and projection loaded from Experiment 2 checkpoint.
+      CTC head loaded from Experiment 3 checkpoint.
+      This means the model started from already-trained weights, not from scratch.
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+Whisper Small (baseline)       244M     103.1%    132.1%      46.0%    105.8%
+Kid-Whisper Medium (teacher)   769M     245.8%    332.6%      37.6%    250.9%
+Student (Joint, warm start)    244M      17.9%     26.1%      17.3%     20.0%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Training progression (all 13,765 clips, dev WER):
+  Epoch  1: 22.1%    Epoch  6: 17.3%    Epoch 11: 17.2%
+  Epoch  2: 19.9%    Epoch  7: 17.0%    Epoch 12: 17.5%
+  Epoch  3: 18.5%    Epoch  8: 17.4%    Epoch 13: 17.3%
+  Epoch  4: 18.3%    Epoch  9: 17.2%    Epoch 14: 17.0%
+  Epoch  5: 17.7%    Epoch 10: 16.8%*   Epoch 15: 17.2% (stopped)
+  * = best checkpoint
+
+Notes:
+  - Massive improvement: 81.9% -> 20.0% overall WER
+  - Beats ALL baselines including IndicConformer (36.0% on Hindi+Marathi)
+  - English: 17.3% — now beats even Kid-Whisper teacher (37.6%)
+  - IMPORTANT CAVEAT: Our model was trained on ASER data, all baselines were zero-shot
+  - 91% of test clips have sentences that appeared in training (different speakers)
+  - Train/test split is speaker-independent (no speaker leakage)
+  - Warm start from Experiments 2+3 — contributes to good results
+
+================================================================================
+FULL COMPARISON TABLE
+================================================================================
+
+Model                          Trained   Hindi    Marathi    English    Overall
+                               on ASER?
+------------------------------ -------- -------- ---------- ---------- ----------
+Whisper Small (244M)           No       103.6%    132.7%      46.2%    106.3%
+Kid-Whisper Medium (769M)      No       247.6%    333.7%      37.6%    252.3%
+IndicConformer (600M)          No        32.4%     44.9%       N/A      36.0%*
+Distilled + Whisper Dec (244M) Yes      177.4%    153.1%     131.0%    167.1%
+Sequential CTC (244M)          Yes       78.7%     96.7%      60.5%     81.9%
+Joint Training (244M)          Yes       17.9%     26.1%      17.3%     20.0%
+------------------------------ -------- -------- ---------- ---------- ----------
+* IndicConformer overall = Hindi+Marathi only (no English support)
+
+================================================================================
+PENDING EXPERIMENTS
+================================================================================
+
+1. Joint Training from Scratch (no warm start)
+   - Start from pretrained Whisper Small (no intermediate checkpoints)
+   - Train with MSE+CTC from beginning
+   - Purpose: isolate joint training architecture contribution vs warm start
+   - Status: NOT YET RUN
+
+================================================================================

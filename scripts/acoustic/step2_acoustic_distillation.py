@@ -411,6 +411,7 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=500, help="Linear warmup steps before decay")
     parser.add_argument("--max_clips", type=int, default=None, help="Limit clips (for quick testing)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint path (e.g., checkpoints/acoustic/epoch_10.pt)")
     args = parser.parse_args()
 
     # ── Reproducibility ──
@@ -498,6 +499,22 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+    # ── Resume from checkpoint if specified ──
+    start_epoch = 1
+    if args.resume:
+        print(f"\nResuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=DEVICE, weights_only=False)
+        student_model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        # Fast-forward scheduler to correct step
+        steps_done = ckpt["epoch"] * len(train_clips)
+        for _ in range(steps_done):
+            scheduler.step()
+        print(f"  Resumed from epoch {ckpt['epoch']}, starting at epoch {start_epoch}")
+        print(f"  Previous train loss: {ckpt['train_loss']:.6f}")
+        print(f"  Previous dev loss: {ckpt['dev_loss']:.6f}")
+
     # ── Verify Pipeline (1 clip) ──
     print("\nVerifying pipeline with 1 clip...")
     test_clip = train_clips[0]
@@ -544,7 +561,7 @@ def main():
     global_step = 0
     epoch_history = []
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         student_model.train()
         teacher_encoder.eval()  # teacher always in eval mode
         epoch_start = time.time()

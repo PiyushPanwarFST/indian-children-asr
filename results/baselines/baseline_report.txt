@@ -1,0 +1,23 @@
+BASELINE ASR EVALUATION REPORT
+================================================================================
+
+Test set: asr_test.csv
+WER method: corpus-level (jiwer) — standard for ASR papers
+Normalization: lowercase + remove punctuation
+Device: cuda
+
+MODELS:
+  1. Whisper Small       — openai/whisper-small (244M, multilingual)
+  2. Kid-Whisper Medium  — aadel4/kid-whisper-medium-en-myst (769M, English-only)
+  3. IndicConformer 600M — ai4bharat/indic-conformer-600m-multilingual (Hindi/Marathi)
+
+================================================================================
+RESULTS — Corpus-Level WER
+================================================================================
+
+Model                                 Hindi    Marathi    English    Overall
+-------------------------------- ---------- ---------- ---------- ----------
+Whisper Small (244M)               103.57%   132.69%    46.21%   106.34%
+Kid-Whisper Medium (769M)          247.56%   333.75%    37.61%   252.33%
+IndicConformer 600M                 32.40%    44.87%        N/A    35.97%
+-------------------------------- ---------- ---------- ---------- ----------
