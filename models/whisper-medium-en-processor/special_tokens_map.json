@@ -1,11 +1,5 @@
 {
-  "add_prefix_space": false,
-  "backend": "tokenizers",
-  "bos_token": "<|endoftext|>",
-  "clean_up_tokenization_spaces": true,
-  "eos_token": "<|endoftext|>",
-  "errors": "replace",
-  "extra_special_tokens": [
+  "additional_special_tokens": [
     "<|startoftranscript|>",
     "<|en|>",
     "<|zh|>",
@@ -113,16 +107,14 @@
     "<|nocaptions|>",
     "<|notimestamps|>"
   ],
-  "is_local": false,
-  "language": null,
-  "local_files_only": false,
-  "model_max_length": 1024,
+  "bos_token": {
+    "content": "<|endoftext|>",
+    "lstrip": false,
+    "normalized": true,
+    "rstrip": false,
+    "single_word": false
+  },
+  "eos_token": "<|endoftext|>",
   "pad_token": "<|endoftext|>",
-  "predict_timestamps": false,
-  "processor_class": "WhisperProcessor",
-  "return_attention_mask": false,
-  "task": null,
-  "tokenizer_class": "WhisperTokenizer",
-  "unk_token": "<|endoftext|>",
-  "use_fast": false
+  "unk_token": "<|endoftext|>"
 }
