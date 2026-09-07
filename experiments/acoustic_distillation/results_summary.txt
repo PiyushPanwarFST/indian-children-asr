@@ -1,0 +1,14 @@
+# Acoustic Distillation Student (244M)
+# Model ID: Whisper Small encoder distilled from Kid-Whisper Medium, decoded with Whisper decoder
+# Date: 2026-09-07
+# Test set: ASER-Dataset/splits/asr_test.csv
+
+==================================================
+  Language      Clips        WER
+  -----------------------------------
+  Hindi          782    177.42%
+  Marathi        366    153.12%
+  English        547    130.97%
+  -----------------------------------
+  Overall       1695    167.10%
+==================================================

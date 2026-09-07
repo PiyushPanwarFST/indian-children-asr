@@ -1,5 +1,5 @@
 # ASR Model Comparison on ASER Test Set
-# Date: 2026-08-25
+# Date: 2026-09-07
 # Test set: 1695 clips (782 Hindi, 366 Marathi, 547 English)
 
 =====================================================================================
@@ -9,6 +9,12 @@
   IndicConformer 600M                          39.01%     44.61%        N/A     59.90%
   Kid-Whisper Medium MyST (769M)              454.66%    656.45%     37.35%    363.56%
   Kid-Whisper Medium MyST+CSLU (769M)         714.32%   1083.20%     58.46%    582.31%
+  ---------------------------------------------------------------------------
+  # CARE Pipeline Experiments (Phase 1-3)
+  ---------------------------------------------------------------------------
+  Acoustic Distillation Student (244M)          177.42%   153.12%   130.97%   167.10%
+  Sequential CTC Student (244M)                  78.66%    96.72%    60.51%    81.86%
+  Joint Training Student (244M)                  17.85%    26.11%    17.33%    19.97%
 =====================================================================================
 
 # Role Assignment (decided by benchmark data)

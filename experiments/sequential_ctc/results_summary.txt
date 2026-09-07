@@ -1,0 +1,14 @@
+# Sequential CTC Student (244M)
+# Model ID: Frozen distilled encoder + CTC head (768→85), greedy decoding
+# Date: 2026-09-07
+# Test set: ASER-Dataset/splits/asr_test.csv
+
+==================================================
+  Language      Clips        WER
+  -----------------------------------
+  Hindi          782     78.66%
+  Marathi        366     96.72%
+  English        547     60.51%
+  -----------------------------------
+  Overall       1695     81.86%
+==================================================
