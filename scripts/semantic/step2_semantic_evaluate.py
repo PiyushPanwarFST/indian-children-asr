@@ -150,12 +150,17 @@ with open(csv_path, encoding="utf-8") as f:
         if not os.path.isabs(audio_path):
             audio_path = str(ASER_ROOT / audio_path)
 
+        # Use child_id + basename as unique identifier (matches step0/step1)
+        child_id = row.get("child_id", "")
+        basename = os.path.splitext(os.path.basename(audio_path))[0]
+        clip_uid = f"{child_id}_{basename}" if child_id else basename
+
         clips.append({
             "audio_path": audio_path,
             "language": lang,
             "lang_code": lang_code,
-            "clip_name": os.path.splitext(os.path.basename(audio_path))[0],
-            "ground_truth": row.get("que_text", row.get("text", "")),
+            "clip_name": clip_uid,
+            "ground_truth": row.get("transcript", row.get("que_text", row.get("text", ""))),
         })
 
 if args.max_clips and args.max_clips < len(clips):

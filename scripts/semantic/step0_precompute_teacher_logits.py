@@ -170,7 +170,7 @@ def load_clips(csv_path, max_clips=None):
     Skips English clips (IndicConformer has no English support).
 
     Returns:
-        list of dicts with keys: audio_path, language, lang_code, ground_truth, filename
+        list of dicts with keys: audio_path, language, lang_code, ground_truth, filename, clip_uid
     """
     clips = []
     lang_map = {"Hindi": "hi", "Marathi": "mr"}
@@ -188,12 +188,21 @@ def load_clips(csv_path, max_clips=None):
             if not os.path.isabs(audio_path):
                 audio_path = os.path.join("ASER-Dataset", audio_path)
 
+            # Use child_id + basename as unique identifier
+            # Multiple children read the same passage → same filename
+            # e.g., 571 clips all named HI_S1_P_0.wav from different children
+            # basename includes chunk suffix (e.g., HI_S1_ST_0_chunk0) for uniqueness
+            child_id = row.get("child_id", "")
+            basename = os.path.splitext(os.path.basename(audio_path))[0]
+            clip_uid = f"{child_id}_{basename}" if child_id else basename
+
             clips.append({
                 "audio_path": audio_path,
                 "language": lang,
                 "lang_code": lang_code,
-                "ground_truth": row.get("que_text", row.get("text", "")),
+                "ground_truth": row.get("transcript", row.get("que_text", row.get("text", ""))),
                 "filename": os.path.basename(audio_path),
+                "clip_uid": clip_uid,
             })
 
     if max_clips and max_clips < len(clips):
@@ -252,7 +261,7 @@ def main():
     start_time = time.time()
 
     for i, clip in enumerate(clips):
-        clip_name = os.path.splitext(clip['filename'])[0]
+        clip_name = clip['clip_uid']
         save_path = os.path.join(output_dir, f"{clip_name}.pt")
 
         if args.verify_only:

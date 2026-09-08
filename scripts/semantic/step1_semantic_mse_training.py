@@ -123,8 +123,11 @@ def load_clips_from_csv(csv_path, split="train", max_clips=None):
             if not os.path.isabs(audio_path):
                 audio_path = str(ASER_ROOT / audio_path)
 
-            clip_name = os.path.splitext(os.path.basename(audio_path))[0]
-            logit_path = TEACHER_LOGITS_DIR / split / f"{clip_name}.pt"
+            # Use child_id + basename as unique identifier (matches step0)
+            child_id = row.get("child_id", "")
+            basename = os.path.splitext(os.path.basename(audio_path))[0]
+            clip_uid = f"{child_id}_{basename}" if child_id else basename
+            logit_path = TEACHER_LOGITS_DIR / split / f"{clip_uid}.pt"
 
             if not logit_path.exists():
                 skipped_no_logits += 1
@@ -134,7 +137,7 @@ def load_clips_from_csv(csv_path, split="train", max_clips=None):
                 "audio_path": audio_path,
                 "language": lang,
                 "lang_code": lang_code,
-                "clip_name": clip_name,
+                "clip_name": clip_uid,
                 "logit_path": str(logit_path),
                 "duration_sec": float(row.get("duration_sec", 0)),
                 "ground_truth": row.get("que_text", row.get("text", "")),
