@@ -1,0 +1,46 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Step 1 — Semantic MSE Training
+# ============================================================
+# Submit: qsub hpc/run_step1_semantic_mse.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/step1_semantic_mse.log
+# ============================================================
+
+#PBS -N sem_mse_train
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/step1_semantic_mse.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  STEP 1: SEMANTIC MSE TRAINING" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u scripts/semantic/step1_semantic_mse_training.py \
+    --epochs 20 \
+    --patience 5 \
+    --lr 3e-5 \
+    --warmup_steps 500 \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
