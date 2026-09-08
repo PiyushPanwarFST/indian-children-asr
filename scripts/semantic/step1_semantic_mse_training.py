@@ -77,7 +77,7 @@ parser.add_argument("--log_every", type=int, default=10)
 args = parser.parse_args()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path("/home/hp/Indain_children_spech")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/semantic/.. → project root
 ASER_ROOT    = PROJECT_ROOT / "ASER-Dataset"
 TRAIN_CSV    = ASER_ROOT / "splits" / "asr_train.csv"
 DEV_CSV      = ASER_ROOT / "splits" / "asr_dev.csv"

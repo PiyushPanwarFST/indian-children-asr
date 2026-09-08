@@ -49,7 +49,7 @@ parser.add_argument("--save_predictions", action="store_true", default=True,
 args = parser.parse_args()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path("/home/hp/Indain_children_spech")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/semantic/.. → project root
 ASER_ROOT    = PROJECT_ROOT / "ASER-Dataset"
 SPLIT_CSV    = {"dev": ASER_ROOT / "splits" / "asr_dev.csv",
                 "test": ASER_ROOT / "splits" / "asr_test.csv"}
