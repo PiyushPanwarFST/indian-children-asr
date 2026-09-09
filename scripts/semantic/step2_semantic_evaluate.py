@@ -111,7 +111,7 @@ ctc_head_mr = nn.Linear(768, 257).to(DEVICE)
 # Load checkpoint
 ckpt_path = PROJECT_ROOT / args.checkpoint
 print(f"  Loading checkpoint: {ckpt_path}")
-checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
+checkpoint = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
 encoder.load_state_dict(checkpoint["encoder_state_dict"])
 ctc_head_hi.load_state_dict(checkpoint["ctc_head_hi_state_dict"])
 ctc_head_mr.load_state_dict(checkpoint["ctc_head_mr_state_dict"])
