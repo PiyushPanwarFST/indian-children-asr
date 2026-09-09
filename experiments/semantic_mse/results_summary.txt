@@ -1,0 +1,14 @@
+# Semantic MSE Student (244M + CTC Head 2)
+# Model: Whisper Small encoder + Linear(768→257) per language
+# Teacher: IndicConformer 600M (MSE on logits)
+# Checkpoint: checkpoints/semantic_mse/best_dev.pt
+# test set: 1148 clips (782 Hindi, 366 Marathi)
+
+==================================================
+  Language        Clips        WER
+  -----------------------------------
+  Hindi             782     39.72%
+  Marathi           366     68.11%
+  -----------------------------------
+  Overall          1148     47.86%
+==================================================

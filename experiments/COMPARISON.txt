@@ -1,20 +1,27 @@
 # ASR Model Comparison on ASER Test Set
-# Date: 2026-09-07
+# Date: 2026-09-09
 # Test set: 1695 clips (782 Hindi, 366 Marathi, 547 English)
+# Note: Semantic branch evaluated on 1148 clips (Hindi+Marathi only, no English)
 
 =====================================================================================
   Model                                         Hindi    Marathi    English    Overall
+  ---------------------------------------------------------------------------
+  # Baselines
   ---------------------------------------------------------------------------
   Whisper Small (244M)                        161.81%    170.78%     47.42%    126.83%
   IndicConformer 600M                          39.01%     44.61%        N/A     59.90%
   Kid-Whisper Medium MyST (769M)              454.66%    656.45%     37.35%    363.56%
   Kid-Whisper Medium MyST+CSLU (769M)         714.32%   1083.20%     58.46%    582.31%
   ---------------------------------------------------------------------------
-  # CARE Pipeline Experiments (Phase 1-3)
+  # CARE Pipeline — Acoustic Branch (Kid-Whisper teacher)
   ---------------------------------------------------------------------------
-  Acoustic Distillation Student (244M)          177.42%   153.12%   130.97%   167.10%
-  Sequential CTC Student (244M)                  78.66%    96.72%    60.51%    81.86%
+  Acoustic Distillation Student (244M)         177.42%   153.12%   130.97%    167.10%
+  Sequential CTC Student (244M)                 78.66%    96.72%    60.51%     81.86%
   Joint Training Student (244M)                  17.85%    26.11%    17.33%    19.97%
+  ---------------------------------------------------------------------------
+  # CARE Pipeline — Semantic Branch (IndicConformer teacher)
+  ---------------------------------------------------------------------------
+  Semantic MSE Student (244M)                   39.72%    68.11%       N/A     47.86%
 =====================================================================================
 
 # Role Assignment (decided by benchmark data)
