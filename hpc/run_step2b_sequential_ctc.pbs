@@ -1,15 +1,15 @@
 #!/bin/bash
 # ============================================================
-# PBS Job: Step 3 — Semantic Branch Joint Training (MSE + CTC)
+# PBS Job: Step 2b — Sequential CTC on Frozen Semantic Encoder
 # ============================================================
-# Submit: qsub hpc/run_step3_semantic_joint.pbs
-# Monitor: tail -f ~/Indain_children_spech/hpc/step3_semantic_joint.log
+# Submit: qsub hpc/run_step2b_sequential_ctc.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/step2b_sequential_ctc.log
 # ============================================================
 
-#PBS -N sem_joint
+#PBS -N sem_seq_ctc
 #PBS -q gpu-ext
 #PBS -l select=1:ncpus=40
-#PBS -l walltime=24:00:00
+#PBS -l walltime=06:00:00
 #PBS -j oe
 
 # Move to project directory
@@ -24,26 +24,20 @@ export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export PYTHONUNBUFFERED=1
 
-LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/step3_semantic_joint.log"
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/step2b_sequential_ctc.log"
 
 echo "============================================================" | tee $LOGFILE
-echo "  STEP 3: SEMANTIC BRANCH — JOINT TRAINING (MSE + CTC)" | tee -a $LOGFILE
+echo "  STEP 2b: SEQUENTIAL CTC ON FROZEN SEMANTIC ENCODER" | tee -a $LOGFILE
 echo "  Started: $(date)" | tee -a $LOGFILE
 echo "  Node: $(hostname)" | tee -a $LOGFILE
 echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
 echo "============================================================" | tee -a $LOGFILE
 
-python -u scripts/semantic/step3_semantic_joint_training.py \
+python -u scripts/semantic/step2b_sequential_ctc.py \
     --epochs 30 \
-    --patience 7 \
-    --lr 2e-5 \
-    --alpha_start 0.3 \
-    --grad_accum 4 \
-    --freeze_layers 6 \
-    --dropout 0.1 \
-    --warmup_steps 1000 \
-    --checkpoint checkpoints/semantic_mse/best_dev.pt \
-    --ctc_checkpoint checkpoints/semantic_ctc/best_wer.pt \
+    --patience 5 \
+    --lr 1e-3 \
+    --warmup_steps 200 \
     2>&1 | tee -a $LOGFILE
 
 echo "" | tee -a $LOGFILE

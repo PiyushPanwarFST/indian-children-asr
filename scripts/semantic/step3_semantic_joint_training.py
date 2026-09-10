@@ -46,7 +46,8 @@ ARCHITECTURE:
 
 WARM START:
     Encoder + CTC Head 2: from checkpoints/semantic_mse/best_dev.pt (step1)
-    CTC Head 1: random init (new, never existed before)
+    CTC Head 1: from checkpoints/semantic_ctc/best_wer.pt (step2b) via --ctc_checkpoint
+                OR random init if --ctc_checkpoint not provided
 
 Prerequisites:
     - Step 1 checkpoint: checkpoints/semantic_mse/best_dev.pt
@@ -105,6 +106,8 @@ parser.add_argument("--dropout", type=float, default=0.1,
 parser.add_argument("--checkpoint", type=str,
                     default="checkpoints/semantic_mse/best_dev.pt",
                     help="Step 1 checkpoint to warm-start from")
+parser.add_argument("--ctc_checkpoint", type=str, default=None,
+                    help="Warm-start CTC Head 1 from sequential CTC checkpoint (step2b)")
 parser.add_argument("--resume", type=str, default=None,
                     help="Resume from joint training checkpoint")
 parser.add_argument("--seed", type=int, default=42)
@@ -341,7 +344,15 @@ else:
     print(f"    Encoder + CTC Head 2 loaded from epoch {ckpt.get('epoch', '?')}")
     print(f"    Step1 train MSE: {ckpt.get('train_loss', '?')}")
     print(f"    Step1 dev MSE:   {ckpt.get('dev_loss', '?')}")
-    print(f"    CTC Head 1 (768→{vocab_size}): random init (new)")
+    if args.ctc_checkpoint:
+        ctc_ckpt_path = PROJECT_ROOT / args.ctc_checkpoint
+        print(f"    CTC Head 1: warm-starting from {ctc_ckpt_path}")
+        ctc_ckpt = torch.load(ctc_ckpt_path, map_location=DEVICE, weights_only=False)
+        ctc_head_char.load_state_dict(ctc_ckpt["ctc_head_state_dict"])
+        print(f"    Sequential CTC dev WER: {ctc_ckpt.get('dev_wer', '?')}")
+        del ctc_ckpt
+    else:
+        print(f"    CTC Head 1 (768→{vocab_size}): random init (new)")
 
 del ckpt
 gc.collect()
