@@ -22,9 +22,9 @@
 │       ↓                 Logits (1500, 85)                    │
 │  (1, 1500, 1024)            ↓                                │
 │       ↓                 CTC Loss ← Ground Truth Text         │
-│  MSE Loss ← Teacher features                                │
+│  MSE Loss ← Teacher features                                 │
 │                                                              │
-│  Total Loss = α × MSE + (1-α) × CTC                         │
+│  Total Loss = α × MSE + (1-α) × CTC                          │
 │       ↓                                                      │
 │  Backprop → updates Encoder + Projection + CTC Head          │
 └──────────────────────────────────────────────────────────────┘
@@ -109,7 +109,18 @@ FOR EACH CLIP:
     with torch.no_grad():
         teacher_features = teacher_encoder(mel)  # (1, 1500, 1024)
 
-    # 1d: MSE Loss (acoustic branch)
+    # 1d: MSE Loss (acoustic branch)  1. "What's different from sequential?" — In sequential, encoder was frozen during CTC training. In joint, encoder is UNFROZEN and gets gradients from BOTH MSE and CTC. The encoder
+  learns features that are both teacher-like AND text-decodable.
+  2. "Why combined loss?" — total = 0.5 * MSE + 0.5 * CTC. MSE keeps encoder close to teacher (acoustic knowledge). CTC makes features useful for text prediction. Without MSE, encoder
+  could drift away from teacher. Without CTC, encoder wouldn't optimize for text.
+  3. "Why warm start?" — We load trained encoder (from acoustic distillation) and trained CTC head (from sequential training). Starting from scratch would take much longer and might
+  not converge.
+  4. "How does CTC loss work?" — It considers ALL possible alignments between 1500 encoder frames and target text. Blank token (index 0) means "no output at this frame." It sums
+  probabilities of all valid alignments. PyTorch: torch.nn.CTCLoss(blank=0, zero_infinity=True).
+  5. "How does greedy decoding work?" — argmax per frame → collapse consecutive duplicates → remove blanks → map to characters. No language model, no beam search.
+  6. "Why dev WER 16.8% but test WER 20%?" — Normal gap. Dev set is smaller (1775 clips), test set is larger (1695 clips) with different speakers. 3% gap is expected.
+  7. "Why does it beat IndicConformer?" — Our model was trained on ASER data, IndicConformer was zero-shot. In-domain fine-tuning always beats zero-shot. Fair comparison would require
+  fine-tuning IndicConformer on ASER too.
     projected = projection(dropout(student_features))  # (1, 1500, 1024)
     mse = MSE(projected[:, :real_frames], teacher_features[:, :real_frames])
 

@@ -31,6 +31,9 @@ venv/
 # Checkpoints — too large for git
 checkpoints/
 
+# Teacher logits — too large for git
+teacher_logits/
+
 # Benchmark raw data
 benchmarks/*.csv
 

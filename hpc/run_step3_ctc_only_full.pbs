@@ -1,0 +1,53 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Step 3 — CTC-only Fine-tuning FULL RUN
+# ============================================================
+# Submit: qsub hpc/run_step3_ctc_only_full.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/step3_ctc_only_full.log
+# ============================================================
+# FULL RUN: all clips, 30 epochs, all 3 languages
+
+#PBS -N ctc_only_full
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+# Move to project directory
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+# Load conda
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+# GPU nodes have no internet — use cached models only
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/step3_ctc_only_full.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  STEP 3: CTC-ONLY FINE-TUNING — FULL TRAINING" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/semantic_branch/04_joint_training/step3_semantic_joint_training.py \
+    --ctc_only \
+    --epochs 30 \
+    --patience 7 \
+    --lr 2e-5 \
+    --grad_accum 4 \
+    --freeze_layers 6 \
+    --dropout 0.1 \
+    --warmup_steps 1000 \
+    --checkpoint checkpoints/semantic_mse/best_dev.pt \
+    --ctc_checkpoint checkpoints/semantic_ctc/best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
