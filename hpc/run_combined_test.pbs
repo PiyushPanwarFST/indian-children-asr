@@ -1,0 +1,48 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Combined Branch — Gated Fusion TEST RUN
+# ============================================================
+# Submit: qsub hpc/run_combined_test.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/combined_test.log
+# ============================================================
+# TEST RUN: 3000 clips, 10 epochs — validates architecture works
+
+#PBS -N combined_test
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/combined_test.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  COMBINED BRANCH: GATED FUSION — TEST RUN (3000 clips)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/combined_branch/01_feature_fusion/step1_combined_training.py \
+    --test_clips 3000 \
+    --epochs 10 \
+    --patience 5 \
+    --lr 1e-3 \
+    --warmup_steps 200 \
+    --dropout 0.1 \
+    --acoustic_ckpt checkpoints/joint/joint_best_wer.pt \
+    --semantic_ckpt checkpoints/semantic_mse/best_dev.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
