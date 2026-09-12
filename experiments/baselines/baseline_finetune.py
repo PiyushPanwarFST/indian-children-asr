@@ -1,60 +1,64 @@
 """
-Combined Branch — Dual-Encoder Feature Fusion Training
-=======================================================
+Baseline Fine-tuning — Standard CTC Fine-tuning on ASER Dataset
+================================================================
 
 WHAT THIS SCRIPT DOES:
-    Fuses features from TWO frozen Whisper Small encoders:
-      1. Acoustic encoder (trained with Kid-Whisper MSE + CTC, 19.97% WER)
-      2. Semantic encoder (trained with IndicConformer MSE, 49.02% WER)
+    Fine-tunes a pretrained ASR encoder on ASER dataset using CTC loss.
+    This is STANDARD fine-tuning — no distillation, no dual-encoder fusion.
+    The entire encoder is unfrozen and trained end-to-end with a CTC head.
 
-    A trainable GatedFusion module learns per-frame weighting between the two
-    encoders, and a warm-started CTC head decodes the fused features.
+    This provides baseline numbers to compare against our proposed method
+    (dual-encoder gated fusion, 17.10% WER). If our method beats simple
+    fine-tuning, the distillation+fusion pipeline is justified.
 
-    Both encoders are FROZEN — only the fusion layer + CTC head train.
-    Total trainable: ~1.25M params (vs ~89M in joint training).
+SUPPORTED MODELS:
+    1. whisper-small — OpenAI Whisper Small (242M params, 768-dim encoder)
+       Tests: "What if we just fine-tuned a general ASR model on ASER?"
 
-WHY THIS SHOULD WORK:
-    The acoustic encoder captures children's voice patterns (Kid-Whisper).
-    The semantic encoder captures Indian language phonetics (IndicConformer).
-    Neither alone has both. Gated fusion learns which encoder to trust per frame.
+    2. kid-whisper — Kid-Whisper Medium (769M params, 1024-dim encoder)
+       Tests: "What if we just fine-tuned a children's ASR model on ASER?"
 
 ARCHITECTURE:
     ┌───────────────────────────────────────────────────────────────┐
-    │  Audio → Mel → SpecAugment (shared)                          │
-    │       ├→ Acoustic Encoder (FROZEN) → feat_a (T, 768)         │
-    │       └→ Semantic Encoder (FROZEN) → feat_s (T, 768)         │
-    │            ↓ concat → (T, 1536)                              │
-    │       GatedFusion (TRAINABLE):                               │
-    │         gate = σ(Linear(1536→768))                           │
-    │         fused = gate * feat_a + (1-gate) * feat_s            │
-    │         → LayerNorm → Dropout                                │
-    │            ↓                                                 │
-    │       CTC Head: Linear(768→85) — warm from acoustic          │
-    │            ↓                                                 │
-    │       CTC Loss ← ground truth text                           │
+    │  Audio (.wav) — ALL languages (Hindi + Marathi + English)     │
+    │       ↓                                                      │
+    │  Mel Spectrogram → SpecAugment (minimal)                     │
+    │       ↓                                                      │
+    │  Encoder (ALL layers UNFROZEN)                               │
+    │    whisper-small: 12 layers, 768-dim output                  │
+    │    kid-whisper:   24 layers, 1024-dim output                 │
+    │       ↓                                                      │
+    │  CTC Head: Linear(dim→85) — random init                     │
+    │       ↓                                                      │
+    │  CTC Loss ← ground truth text                                │
+    │       ↓                                                      │
+    │  Backprop → entire encoder + CTC head                        │
     └───────────────────────────────────────────────────────────────┘
 
+    This is deliberately simple — no teacher, no frozen layers, no fusion.
+    Standard fine-tuning baseline for fair comparison.
+
 WARM START:
-    Acoustic encoder: checkpoints/joint/joint_best_wer.pt → encoder_state_dict
-    Semantic encoder: checkpoints/semantic_mse/best_dev.pt → encoder_state_dict
-    CTC head:         checkpoints/joint/joint_best_wer.pt → ctc_head_state_dict
-                      (warm from acoustic branch — already knows char→CTC mapping)
+    Encoder: from HuggingFace pretrained weights (no custom checkpoint)
+    CTC head: random initialization (no warm start)
 
 Prerequisites:
-    - Acoustic checkpoint: checkpoints/joint/joint_best_wer.pt (from acoustic branch joint training)
-    - Semantic checkpoint: checkpoints/semantic_mse/best_dev.pt (from semantic branch MSE distillation)
     - Vocabulary: ASER-Dataset/vocab.json (85 tokens)
     - Splits: ASER-Dataset/splits/asr_train.csv, asr_dev.csv
+    - HuggingFace model cached (run with internet first, or pre-cache)
 
 Usage:
-    # Test run (3000 clips, 10 epochs)
-    python step1_combined_training.py --test_clips 3000 --epochs 10
+    # Whisper Small — test run
+    python baseline_finetune.py --model whisper-small --test_clips 3000 --epochs 10
 
-    # Full training
-    python step1_combined_training.py --epochs 30 --patience 7
+    # Whisper Small — full training
+    python baseline_finetune.py --model whisper-small --epochs 25 --patience 7
 
-    # Resume from checkpoint
-    python step1_combined_training.py --resume checkpoints/combined/epoch_5.pt --epochs 30
+    # Kid-Whisper Medium — test run
+    python baseline_finetune.py --model kid-whisper --test_clips 3000 --epochs 10
+
+    # Kid-Whisper Medium — full training (use grad checkpoint if memory tight)
+    python baseline_finetune.py --model kid-whisper --epochs 25 --patience 7 --grad_checkpoint
 """
 
 import argparse
@@ -74,40 +78,54 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ── Args ──────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Combined branch: dual-encoder fusion training")
+parser = argparse.ArgumentParser(description="Baseline fine-tuning (standard CTC)")
+parser.add_argument("--model", type=str, required=True,
+                    choices=["whisper-small", "kid-whisper"],
+                    help="Model to fine-tune: whisper-small or kid-whisper")
 parser.add_argument("--verify", action="store_true",
-                    help="Quick verify (skips checkpoint saving)")
+                    help="Quick verify mode (100 clips, skips checkpoint saving)")
 parser.add_argument("--test_clips", type=int, default=None,
-                    help="Limit training clips")
-parser.add_argument("--epochs", type=int, default=30)
-parser.add_argument("--lr", type=float, default=1e-3,
-                    help="Learning rate (higher OK — only ~1.25M trainable params)")
-parser.add_argument("--warmup_steps", type=int, default=200)
+                    help="Limit training clips for test runs")
+parser.add_argument("--epochs", type=int, default=25)
+parser.add_argument("--lr", type=float, default=2e-5,
+                    help="Learning rate (2e-5 standard for full fine-tuning)")
+parser.add_argument("--warmup_steps", type=int, default=500)
 parser.add_argument("--max_audio_sec", type=float, default=30.0)
 parser.add_argument("--patience", type=int, default=7,
                     help="Early stopping patience on dev WER (0=disabled)")
-parser.add_argument("--dropout", type=float, default=0.1)
-parser.add_argument("--acoustic_ckpt", type=str,
-                    default="checkpoints/joint/joint_best_wer.pt",
-                    help="Acoustic encoder checkpoint (joint training result)")
-parser.add_argument("--semantic_ckpt", type=str,
-                    default="checkpoints/semantic_mse/best_dev.pt",
-                    help="Semantic encoder checkpoint (MSE distillation result)")
-parser.add_argument("--ctc_ckpt", type=str, default=None,
-                    help="CTC head warm-start (default: from acoustic checkpoint)")
-parser.add_argument("--resume", type=str, default=None,
-                    help="Resume from combined training checkpoint")
+parser.add_argument("--grad_checkpoint", action="store_true",
+                    help="Enable gradient checkpointing (saves memory for Kid-Whisper)")
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--resume", type=str, default=None,
+                    help="Resume from checkpoint path")
 parser.add_argument("--log_every", type=int, default=10)
 args = parser.parse_args()
 
+# ── Model configs ─────────────────────────────────────────────────────────────
+MODEL_CONFIGS = {
+    "whisper-small": {
+        "hf_id": "openai/whisper-small",
+        "encoder_dim": 768,
+        "description": "Whisper Small (242M params, general multilingual ASR)",
+    },
+    "kid-whisper": {
+        "hf_id": "aadel4/kid-whisper-medium-en-myst",
+        "encoder_dim": 1024,
+        "description": "Kid-Whisper Medium (769M params, children's English ASR)",
+    },
+}
+
+config = MODEL_CONFIGS[args.model]
+HF_ID = config["hf_id"]
+ENCODER_DIM = config["encoder_dim"]
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 ASER_ROOT    = PROJECT_ROOT / "ASER-Dataset"
 TRAIN_CSV    = ASER_ROOT / "splits" / "asr_train.csv"
 DEV_CSV      = ASER_ROOT / "splits" / "asr_dev.csv"
 VOCAB_PATH   = ASER_ROOT / "vocab.json"
-CKPT_DIR     = PROJECT_ROOT / "checkpoints" / "combined"
+CKPT_DIR     = PROJECT_ROOT / "checkpoints" / "baselines" / args.model
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 SAMPLE_RATE = 16000
@@ -118,6 +136,10 @@ LANG_MAP = {"Hindi": "hi", "Marathi": "mr", "English": "en"}
 sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.utils.wer import normalize_text, compute_corpus_wer
 
+print(f"{'=' * 70}")
+print(f"  BASELINE FINE-TUNING: {args.model}")
+print(f"  {config['description']}")
+print(f"{'=' * 70}")
 print(f"Device: {DEVICE}")
 if DEVICE == "cuda":
     gpu_name = torch.cuda.get_device_name(0)
@@ -156,7 +178,7 @@ def text_to_indices(text, char_to_idx):
 
 
 def ctc_greedy_decode(logits, idx_to_char):
-    """Greedy CTC decode from logits (T, vocab_size)."""
+    """Greedy CTC decode from logits (T, vocab_size) → text string."""
     indices = torch.argmax(logits, dim=-1)  # (T,)
     collapsed = torch.unique_consecutive(indices)
     chars = []
@@ -185,9 +207,6 @@ print("=" * 70)
 def load_clips_from_csv(csv_path, max_clips=None):
     """
     Load all clips from CSV — all 3 languages, no teacher logits needed.
-
-    Unlike semantic branch (which needs teacher logits), this loads raw audio paths
-    and ground truth text only. Used for both train and dev sets.
 
     Args:
         csv_path: Path to asr_train.csv or asr_dev.csv
@@ -288,175 +307,66 @@ if N and N < len(train_clips):
 print()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 3: Load models (two frozen encoders + trainable fusion)
+# STEP 3: Load model (pretrained encoder + random CTC head)
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
-print("STEP 3: Loading models")
+print(f"STEP 3: Loading {args.model} encoder")
 print("=" * 70)
 
 import torchaudio
 from transformers import WhisperModel, WhisperFeatureExtractor
 
-WHISPER_ID = "openai/whisper-small"
-
 # ── Feature extractor ────────────────────────────────────────────────────────
-feat_extractor = WhisperFeatureExtractor.from_pretrained(WHISPER_ID)
+feat_extractor = WhisperFeatureExtractor.from_pretrained(HF_ID)
 
+# ── Encoder ──────────────────────────────────────────────────────────────────
+print(f"\n  Loading pretrained encoder: {HF_ID}")
+whisper_model = WhisperModel.from_pretrained(HF_ID)
+encoder = whisper_model.encoder.to(DEVICE)
+del whisper_model
+gc.collect()
 
-def load_frozen_encoder(checkpoint_path, label):
-    """
-    Load a Whisper Small encoder from checkpoint and freeze all parameters.
+# ALL parameters unfrozen (standard fine-tuning)
+for param in encoder.parameters():
+    param.requires_grad = True
+encoder.train()
 
-    Handles two checkpoint formats:
-      - encoder_state_dict (from joint/semantic training)
-      - model_state_dict with 'encoder.' prefix (from acoustic MSE training)
+encoder_params = sum(p.numel() for p in encoder.parameters())
+print(f"  Encoder: {encoder_params:,} params (ALL UNFROZEN)")
 
-    Args:
-        checkpoint_path: Relative path from PROJECT_ROOT to the .pt checkpoint
-        label: Display label for logging (e.g., "ACOUSTIC ENCODER")
+# Gradient checkpointing (optional, saves memory for Kid-Whisper Medium)
+if args.grad_checkpoint:
+    encoder.gradient_checkpointing_enable()
+    print(f"  Gradient checkpointing: ENABLED")
 
-    Returns:
-        Frozen encoder module (requires_grad=False, eval mode)
-    """
-    print(f"\n  [{label}] Loading Whisper Small encoder...")
-    whisper_model = WhisperModel.from_pretrained(WHISPER_ID)
-    encoder = whisper_model.encoder.to(DEVICE)
+# ── CTC Head (random init) ──────────────────────────────────────────────────
+print(f"\n  CTC Head: Linear({ENCODER_DIM}→{vocab_size}) — random init")
+ctc_head = nn.Linear(ENCODER_DIM, vocab_size).to(DEVICE)
+ctc_params = sum(p.numel() for p in ctc_head.parameters())
 
-    # Load trained weights
-    ckpt_path = PROJECT_ROOT / checkpoint_path
-    if not ckpt_path.exists():
-        # Try alternate path
-        alt_paths = [
-            PROJECT_ROOT / "checkpoints" / "semantic" / "best_dev_model.pt",
-            PROJECT_ROOT / "checkpoints" / "joint" / "joint_best_wer.pt",
-        ]
-        for alt in alt_paths:
-            if alt.exists() and "semantic" in checkpoint_path.lower():
-                ckpt_path = alt
-                break
-        if not ckpt_path.exists():
-            print(f"    ERROR: Checkpoint not found: {ckpt_path}")
-            exit(1)
-
-    print(f"    Loading from: {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
-
-    # Handle different checkpoint key formats
-    if "encoder_state_dict" in ckpt:
-        encoder.load_state_dict(ckpt["encoder_state_dict"])
-    elif "model_state_dict" in ckpt:
-        # Acoustic MSE checkpoint uses model_state_dict with prefixed keys
-        state = {}
-        for k, v in ckpt["model_state_dict"].items():
-            if k.startswith("encoder."):
-                state[k[len("encoder."):]] = v
-        encoder.load_state_dict(state)
-    else:
-        print(f"    ERROR: Unknown checkpoint format. Keys: {list(ckpt.keys())[:5]}")
-        exit(1)
-
-    epoch_info = ckpt.get("epoch", "?")
-    print(f"    Loaded from epoch {epoch_info}")
-
-    # Freeze completely
-    for param in encoder.parameters():
-        param.requires_grad = False
-    encoder.eval()
-    print(f"    FROZEN ({sum(p.numel() for p in encoder.parameters()):,} params, requires_grad=False)")
-
-    # Clean up
-    del whisper_model, ckpt
-    gc.collect()
-
-    return encoder
-
-
-# ── Load both encoders ───────────────────────────────────────────────────────
-acoustic_encoder = load_frozen_encoder(args.acoustic_ckpt, "ACOUSTIC ENCODER")
-semantic_encoder = load_frozen_encoder(args.semantic_ckpt, "SEMANTIC ENCODER")
-
-
-# ── Gated Fusion module ─────────────────────────────────────────────────────
-class GatedFusion(nn.Module):
-    """
-    Learns per-frame, per-dimension weighting between acoustic and semantic features.
-    gate = σ(W_g @ [feat_a; feat_s] + b_g)
-    fused = gate * feat_a + (1 - gate) * feat_s
-    """
-    def __init__(self, dim=768, dropout=0.1):
-        super().__init__()
-        self.gate_linear = nn.Linear(dim * 2, dim)
-        self.layer_norm = nn.LayerNorm(dim)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, acoustic_feat, semantic_feat):
-        # acoustic_feat, semantic_feat: (B, T, 768)
-        concat = torch.cat([acoustic_feat, semantic_feat], dim=-1)  # (B, T, 1536)
-        gate = torch.sigmoid(self.gate_linear(concat))  # (B, T, 768)
-        fused = gate * acoustic_feat + (1 - gate) * semantic_feat  # (B, T, 768)
-        fused = self.layer_norm(fused)
-        fused = self.dropout(fused)
-        return fused
-
-
-print(f"\n  [GATED FUSION] Creating fusion module...")
-fusion = GatedFusion(dim=768, dropout=args.dropout).to(DEVICE)
-fusion_params = sum(p.numel() for p in fusion.parameters())
-print(f"    Params: {fusion_params:,}")
-
-# ── CTC Head ─────────────────────────────────────────────────────────────────
-print(f"\n  [CTC HEAD] Linear(768→{vocab_size})...")
-ctc_head = nn.Linear(768, vocab_size).to(DEVICE)
-
-# ── Warm-start CTC head ──────────────────────────────────────────────────────
+# ── Resume from checkpoint ──────────────────────────────────────────────────
 start_epoch = 0
 best_dev_wer = float("inf")
 
 if args.resume:
     ckpt_path = PROJECT_ROOT / args.resume
-    print(f"\n  [RESUME] Loading combined checkpoint: {ckpt_path}")
+    print(f"\n  [RESUME] Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
-    fusion.load_state_dict(ckpt["fusion_state_dict"])
+    encoder.load_state_dict(ckpt["encoder_state_dict"])
     ctc_head.load_state_dict(ckpt["ctc_head_state_dict"])
     start_epoch = ckpt.get("epoch", 0)
     best_dev_wer = ckpt.get("dev_wer", float("inf"))
     print(f"    Resuming from epoch {start_epoch}, best dev WER: {best_dev_wer:.2f}%")
     del ckpt
-else:
-    # Warm-start CTC head from acoustic branch
-    ctc_ckpt_path = args.ctc_ckpt or args.acoustic_ckpt
-    ctc_ckpt_full = PROJECT_ROOT / ctc_ckpt_path
-    if ctc_ckpt_full.exists():
-        print(f"    CTC head warm-start from: {ctc_ckpt_full}")
-        ctc_ckpt = torch.load(ctc_ckpt_full, map_location=DEVICE, weights_only=False)
-        if "ctc_head_state_dict" in ctc_ckpt:
-            ctc_head.load_state_dict(ctc_ckpt["ctc_head_state_dict"])
-            print(f"    CTC head loaded (warm-started from acoustic branch)")
-        elif "ctc_head_char_state_dict" in ctc_ckpt:
-            ctc_head.load_state_dict(ctc_ckpt["ctc_head_char_state_dict"])
-            print(f"    CTC head loaded (warm-started from semantic branch)")
-        else:
-            print(f"    WARNING: No CTC head found in checkpoint — random init")
-        del ctc_ckpt
-    else:
-        print(f"    CTC head: random init (no checkpoint at {ctc_ckpt_full})")
-
-gc.collect()
-if DEVICE == "cuda":
-    torch.cuda.empty_cache()
+    gc.collect()
 
 # ── Param summary ────────────────────────────────────────────────────────────
-acoustic_params = sum(p.numel() for p in acoustic_encoder.parameters())
-semantic_params = sum(p.numel() for p in semantic_encoder.parameters())
-ctc_params = sum(p.numel() for p in ctc_head.parameters())
-total_trainable = fusion_params + ctc_params
+total_trainable = encoder_params + ctc_params
 
 print(f"\n  ┌─ Parameter Summary ──────────────────────────────────────────")
-print(f"  │ Acoustic encoder: {acoustic_params:,} (FROZEN)")
-print(f"  │ Semantic encoder: {semantic_params:,} (FROZEN)")
-print(f"  │ Gated fusion:     {fusion_params:,} (trainable)")
-print(f"  │ CTC head:         {ctc_params:,} (trainable)")
-print(f"  │ Total trainable:  {total_trainable:,}")
+print(f"  │ Encoder:         {encoder_params:,} (ALL TRAINABLE)")
+print(f"  │ CTC head:        {ctc_params:,} (trainable, random init)")
+print(f"  │ Total trainable: {total_trainable:,}")
 print(f"  └──────────────────────────────────────────────────────────────")
 
 if DEVICE == "cuda":
@@ -490,21 +400,19 @@ def compute_real_frames(num_samples):
 
 def apply_spec_augment(mel_features):
     """
-    Apply SpecAugment data augmentation to mel spectrogram (training only).
-
-    Masks random frequency bands and time steps to improve generalization.
-    Same augmented mel is fed to BOTH encoders for consistency.
-    Config: 2 frequency masks (max width 15), 2 time masks (max width 50).
+    Apply minimal SpecAugment for baseline fine-tuning.
+    Deliberately lighter than our proposed method (1 freq, 1 time mask)
+    to keep this as "standard/basic" fine-tuning per professor's request.
     """
     _, n_freq, n_time = mel_features.shape
-    for _ in range(2):
-        f = random.randint(0, 15)
-        f0 = random.randint(0, max(n_freq - f, 1) - 1)
-        mel_features[:, f0:f0 + f, :] = 0.0
-    for _ in range(2):
-        t = random.randint(0, 50)
-        t0 = random.randint(0, max(n_time - t, 1) - 1)
-        mel_features[:, :, t0:t0 + t] = 0.0
+    # 1 frequency mask (max width 10)
+    f = random.randint(0, 10)
+    f0 = random.randint(0, max(n_freq - f, 1) - 1)
+    mel_features[:, f0:f0 + f, :] = 0.0
+    # 1 time mask (max width 30)
+    t = random.randint(0, 30)
+    t0 = random.randint(0, max(n_time - t, 1) - 1)
+    mel_features[:, :, t0:t0 + t] = 0.0
     return mel_features
 
 
@@ -524,31 +432,22 @@ mel = feat_extractor(test_wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors
 mel_aug = apply_spec_augment(mel.input_features.clone())
 print(f"  Mel: {tuple(mel.input_features.shape)} → SpecAugment applied")
 
-# Both encoders forward (no grad)
-with torch.no_grad():
-    acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
-    semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
-
+# Encoder forward
+encoder_out = encoder(mel_aug.to(DEVICE)).last_hidden_state
 real_frames = compute_real_frames(len(test_wav))
-acoustic_feat = acoustic_out[:, :real_frames, :]
-semantic_feat = semantic_out[:, :real_frames, :]
-print(f"  Acoustic encoder: {tuple(acoustic_feat.shape)}")
-print(f"  Semantic encoder: {tuple(semantic_feat.shape)}")
-
-# Fusion forward (with grad)
-fused = fusion(acoustic_feat, semantic_feat)
-print(f"  Gated fusion: {tuple(fused.shape)}")
+features = encoder_out[:, :real_frames, :]  # (1, T, dim)
+print(f"  Encoder output: {tuple(features.shape)} (dim={ENCODER_DIM})")
 
 # CTC Head
-char_logits = ctc_head(fused)
+char_logits = ctc_head(features)  # (1, T, 85)
 print(f"  CTC head: {tuple(char_logits.shape)}")
 
-# CTC loss
+# CTC loss test
 gt = normalize_text(test_clip["ground_truth"])
 target_indices = text_to_indices(gt, char_to_idx)
 if target_indices and real_frames > len(target_indices):
     ctc_loss_fn = nn.CTCLoss(blank=BLANK_IDX, zero_infinity=True)
-    log_probs = char_logits.log_softmax(dim=-1).permute(1, 0, 2)  # (T, 1, 85)
+    log_probs = char_logits.log_softmax(dim=-1).permute(1, 0, 2)  # (T, 1, vocab)
     targets = torch.tensor(target_indices, dtype=torch.long).to(DEVICE)
     input_lengths = torch.tensor([real_frames], dtype=torch.long).to(DEVICE)
     target_lengths = torch.tensor([len(target_indices)], dtype=torch.long).to(DEVICE)
@@ -556,20 +455,17 @@ if target_indices and real_frames > len(target_indices):
     print(f"  CTC loss: {ctc_loss.item():.4f}")
     print(f"  Ground truth: '{gt}' ({len(target_indices)} chars)")
 
-    # Verify gradients
+    # Verify gradients flow through encoder
     ctc_loss.backward()
-    fusion_grads = sum(1 for p in fusion.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+    enc_grads = sum(1 for p in encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     ctc_grads = sum(1 for p in ctc_head.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
-    acoustic_grads = sum(1 for p in acoustic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
-    semantic_grads = sum(1 for p in semantic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
-    print(f"  Gradients: fusion={fusion_grads}>0 | ctc_head={ctc_grads}>0 | "
-          f"acoustic_enc={acoustic_grads}(should=0) | semantic_enc={semantic_grads}(should=0)")
+    print(f"  Gradients: encoder={enc_grads}>0 | ctc_head={ctc_grads}>0")
 
     # Greedy decode check
     pred = ctc_greedy_decode(char_logits.squeeze(0).detach(), idx_to_char)
     print(f"  Decode test: '{pred[:80]}...'")
 
-fusion.zero_grad()
+encoder.zero_grad()
 ctc_head.zero_grad()
 
 if DEVICE == "cuda":
@@ -587,12 +483,12 @@ print("=" * 70)
 print("STEP 6: Training setup")
 print("=" * 70)
 
-# Trainable params: fusion + CTC head only
-trainable_params = list(fusion.parameters()) + list(ctc_head.parameters())
+# All params trainable (encoder + CTC head)
+trainable_params = list(encoder.parameters()) + list(ctc_head.parameters())
 optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
 
 num_epochs = args.epochs
-total_steps_est = len(train_clips) * num_epochs  # no grad_accum
+total_steps_est = len(train_clips) * num_epochs
 warmup_steps = min(args.warmup_steps, total_steps_est // 4)
 
 
@@ -620,8 +516,7 @@ ctc_loss_fn = nn.CTCLoss(blank=BLANK_IDX, zero_infinity=True)
 print(f"  Optimizer: AdamW (lr={args.lr}, wd=0.01)")
 print(f"  Scheduler: linear warmup ({warmup_steps} steps) + cosine decay")
 print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)}")
-print(f"  Trainable: {total_trainable:,} params (fusion + CTC head)")
-print(f"  Dropout: {args.dropout}")
+print(f"  Total trainable: {total_trainable:,} params (encoder + CTC head)")
 if args.patience > 0:
     print(f"  Early stopping: patience={args.patience} (on dev WER)")
 print()
@@ -631,10 +526,10 @@ print()
 
 def evaluate_dev(dev_clips_list):
     """
-    Evaluate on dev set — WER from fused features + CTC head.
+    Evaluate on dev set — WER from encoder + CTC head.
     Returns: (dev_wer, dev_loss, all_preds, lang_wers)
     """
-    fusion.eval()
+    encoder.eval()
     ctc_head.eval()
 
     all_refs = []
@@ -654,16 +549,13 @@ def evaluate_dev(dev_clips_list):
                 # Mel (no SpecAugment for eval)
                 mel = feat_extractor(wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors="pt")
 
-                # Both encoders
-                a_out = acoustic_encoder(mel.input_features.to(DEVICE)).last_hidden_state
-                s_out = semantic_encoder(mel.input_features.to(DEVICE)).last_hidden_state
+                # Encoder
+                enc_out = encoder(mel.input_features.to(DEVICE)).last_hidden_state
                 real_frames = compute_real_frames(len(wav))
-                a_feat = a_out[:, :real_frames, :]
-                s_feat = s_out[:, :real_frames, :]
+                features = enc_out[:, :real_frames, :]
 
-                # Fusion + CTC head
-                fused = fusion(a_feat, s_feat)
-                logits = ctc_head(fused)  # (1, T, 85)
+                # CTC head
+                logits = ctc_head(features)  # (1, T, 85)
 
                 # CTC loss
                 gt = normalize_text(clip["ground_truth"])
@@ -689,13 +581,13 @@ def evaluate_dev(dev_clips_list):
                         lang_hyps[lc].append(predicted)
 
                 if DEVICE == "cuda":
-                    del a_out, s_out, a_feat, s_feat, fused, logits
+                    del enc_out, features, logits
                     torch.cuda.empty_cache()
 
             except Exception:
                 continue
 
-    fusion.train()
+    encoder.train()
     ctc_head.train()
 
     dev_wer = compute_corpus_wer(all_refs, all_hyps) * 100 if all_refs else 999.0
@@ -716,7 +608,7 @@ def evaluate_dev(dev_clips_list):
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
 mode_str = f"VERIFICATION ({len(train_clips)} clips)" if args.verify else "Full training"
-print(f"STEP 7: {mode_str}")
+print(f"STEP 7: {mode_str} — {args.model}")
 print("=" * 70)
 
 random.seed(args.seed)
@@ -729,7 +621,7 @@ global_step = 0
 patience_counter = 0
 training_start = time.time()
 
-fusion.train()
+encoder.train()
 ctc_head.train()
 
 for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
@@ -757,18 +649,13 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             mel_features = apply_spec_augment(mel.input_features.clone())
             mel_gpu = mel_features.to(DEVICE)
 
-            # ── Both encoders forward (no grad) ──
-            with torch.no_grad():
-                a_out = acoustic_encoder(mel_gpu).last_hidden_state
-                s_out = semantic_encoder(mel_gpu).last_hidden_state
-
+            # ── Encoder forward (WITH grad — full fine-tuning) ──
+            enc_out = encoder(mel_gpu).last_hidden_state
             real_frames = compute_real_frames(num_samples)
-            a_feat = a_out[:, :real_frames, :]  # (1, T, 768)
-            s_feat = s_out[:, :real_frames, :]  # (1, T, 768)
+            features = enc_out[:, :real_frames, :]  # (1, T, dim)
 
-            # ── Fusion + CTC head (with grad) ──
-            fused = fusion(a_feat, s_feat)  # (1, T, 768)
-            logits = ctc_head(fused)  # (1, T, 85)
+            # ── CTC head ──
+            logits = ctc_head(features)  # (1, T, 85)
 
             # ── CTC loss ──
             gt = normalize_text(clip["ground_truth"])
@@ -801,7 +688,7 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
 
             # ── Cleanup ──
             if DEVICE == "cuda":
-                del a_out, s_out, a_feat, s_feat, fused, logits, mel_gpu
+                del enc_out, features, logits, mel_gpu
                 torch.cuda.empty_cache()
 
             # Progress bar
@@ -867,7 +754,10 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
     if not args.verify:
         ckpt_data = {
             "epoch": epoch,
-            "fusion_state_dict": fusion.state_dict(),
+            "model": args.model,
+            "hf_id": HF_ID,
+            "encoder_dim": ENCODER_DIM,
+            "encoder_state_dict": encoder.state_dict(),
             "ctc_head_state_dict": ctc_head.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
@@ -905,7 +795,7 @@ total_time = time.time() - training_start
 # STEP 8: Final results
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
-print("STEP 8: Results")
+print(f"STEP 8: Results — {args.model} baseline fine-tuning")
 print("=" * 70)
 
 if epoch_stats:
@@ -933,9 +823,11 @@ if epoch_stats:
     if best_dev_wer < 999:
         print(f"\n  Best dev WER: {best_dev_wer:.2f}%")
         print(f"\n  Comparison:")
-        print(f"    Acoustic branch (Kid-Whisper):     19.97% (Hi 15.72% | Mr 26.37% | En 30.03%)")
-        print(f"    Semantic branch (IndicConformer):   49.02% (Hi 37.95% | Mr 74.36% | En 56.82%)")
-        print(f"    Combined (this run):                {best_dev_wer:.2f}%")
+        print(f"    Whisper Small (zero-shot):          ~45%+ (no fine-tuning)")
+        print(f"    Acoustic branch (Kid-Whisper dist):  19.97%")
+        print(f"    Semantic branch (IndicConf dist):    49.02%")
+        print(f"    Combined (gated fusion):             17.10%")
+        print(f"    {args.model} fine-tuned (this run):  {best_dev_wer:.2f}%")
 
 print(f"\n  Total time: {total_time:.0f}s ({total_time/60:.1f}min)")
 print(f"  Total steps: {global_step}")

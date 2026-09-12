@@ -1,0 +1,52 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Baseline — Kid-Whisper Medium Fine-tuning TEST RUN
+# ============================================================
+# Submit: qsub hpc/run_baseline_kidwhisper_test.pbs
+# Monitor: tail -f /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_kidwhisper_test.log
+# ============================================================
+# TEST RUN: 3000 clips, 10 epochs
+# NOTE: Kid-Whisper Medium (769M params) must be pre-cached.
+#   Run on login node first:
+#   python -c "from transformers import WhisperModel, WhisperFeatureExtractor; \
+#     WhisperModel.from_pretrained('aadel4/kid-whisper-medium-en-myst'); \
+#     WhisperFeatureExtractor.from_pretrained('aadel4/kid-whisper-medium-en-myst')"
+
+#PBS -N baseline_kidwhisper_test
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=08:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_kidwhisper_test.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  BASELINE: KID-WHISPER MEDIUM FINE-TUNING — TEST RUN (3000 clips)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/baselines/baseline_finetune.py \
+    --model kid-whisper \
+    --test_clips 3000 \
+    --epochs 10 \
+    --patience 5 \
+    --lr 2e-5 \
+    --warmup_steps 500 \
+    --grad_checkpoint \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE

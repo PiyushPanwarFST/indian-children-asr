@@ -1,0 +1,46 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Baseline — Whisper Small Fine-tuning TEST RUN
+# ============================================================
+# Submit: qsub hpc/run_baseline_whisper_test.pbs
+# Monitor: tail -f /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_whisper_test.log
+# ============================================================
+# TEST RUN: 3000 clips, 10 epochs — validates training works
+
+#PBS -N baseline_whisper_test
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=06:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_whisper_test.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  BASELINE: WHISPER SMALL FINE-TUNING — TEST RUN (3000 clips)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/baselines/baseline_finetune.py \
+    --model whisper-small \
+    --test_clips 3000 \
+    --epochs 10 \
+    --patience 5 \
+    --lr 2e-5 \
+    --warmup_steps 500 \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
