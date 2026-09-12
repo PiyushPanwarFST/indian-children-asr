@@ -1,0 +1,40 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Evaluate Semantic Joint Training on TEST set
+# ============================================================
+# Submit: qsub hpc/run_eval_semantic_joint.pbs
+# Monitor: tail -f /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/eval_semantic_joint.log
+# ============================================================
+
+#PBS -N eval_sem_joint
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/eval_semantic_joint.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  EVAL: Semantic Joint Training — TEST SET" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/semantic_branch/04_joint_training/step4_semantic_joint_evaluate.py \
+    --checkpoint checkpoints/semantic_joint/best_dev.pt \
+    --split test \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE

@@ -1,0 +1,45 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Evaluate Combined Gated Fusion on TEST set
+# ============================================================
+# Submit: qsub hpc/run_eval_combined.pbs
+# Monitor: tail -f /iitjfs/home/2025rcs1026/Indain_children_spech/hpc/eval_combined.log
+# ============================================================
+# Run this AFTER combined training finishes
+
+#PBS -N eval_combined
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/eval_combined.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  EVAL: Combined Gated Fusion — TEST SET" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/combined_branch/01_feature_fusion/step2_combined_evaluate.py \
+    --eval_set test \
+    --per_lang 9999 \
+    --combined_ckpt checkpoints/combined/best_wer.pt \
+    --acoustic_ckpt checkpoints/joint/joint_best_wer.pt \
+    --semantic_ckpt checkpoints/semantic_mse/best_dev.pt \
+    --skip_baseline \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
