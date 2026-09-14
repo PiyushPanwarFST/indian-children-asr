@@ -36,7 +36,7 @@ python -u experiments/baselines/baseline_finetune.py \
     --test_clips 3000 \
     --epochs 10 \
     --patience 5 \
-    --lr 2e-5 \
+    --lr 1e-5 \
     --warmup_steps 500 \
     2>&1 | tee -a $LOGFILE
 
