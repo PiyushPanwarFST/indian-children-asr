@@ -1,0 +1,63 @@
+Combined Branch Evaluation — test set (1695 clips)
+============================================================
+
+Overall WER:
+  Acoustic Only:         19.96%
+  Combined (Fusion):     18.92%
+
+Per-language WER:
+  English: Acoustic 17.33% → Combined 16.06%
+  Hindi: Acoustic 17.83% → Combined 16.85%
+  Marathi: Acoustic 26.11% → Combined 25.01%
+
+Sample predictions:
+
+  [English] 3481_HI_S4_S_0.wav
+  GT:       what is the time
+  Acoustic: what is the time
+  Combined: what is the time
+
+  [English] 3481_HI_S4_S_1.wav
+  GT:       this is a blue shirt
+  Acoustic: this is a blue shirt
+  Combined: this is a blue shirt
+
+  [English] 3481_HI_S4_S_2.wav
+  GT:       i like to sleep
+  Acoustic: i like to sleep
+  Combined: i like to sleep
+
+  [English] 3481_HI_S4_S_3.wav
+  GT:       i have a big house
+  Acoustic: i have a big house
+  Combined: i have a big house
+
+  [English] 3500_HI_S4_S_0.wav
+  GT:       what is the time
+  Acoustic: what is the time
+  Combined: what is the time
+
+  [English] 3500_HI_S4_S_2.wav
+  GT:       i like to sleep
+  Acoustic: i like to slep
+  Combined: i like to sleep
+
+  [English] 3500_HI_S4_S_3.wav
+  GT:       i have a big house
+  Acoustic: i have a big house
+  Combined: i have a big house
+
+  [English] 3538_HI_S2_S_0.wav
+  GT:       what is the time
+  Acoustic: what is the time
+  Combined: what is the time
+
+  [English] 3538_HI_S2_S_1.wav
+  GT:       this is a red ball
+  Acoustic: this is a red ball
+  Combined: this is a red ball
+
+  [English] 3538_HI_S2_S_2.wav
+  GT:       i like to play
+  Acoustic: i like to play
+  Combined: i like to play

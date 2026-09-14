@@ -137,13 +137,106 @@ Joint Training (244M)          Yes       17.9%     26.1%      17.3%     20.0%
 * IndicConformer overall = Hindi+Marathi only (no English support)
 
 ================================================================================
+EXPERIMENT 5: SEMANTIC BRANCH — MSE Distillation from IndicConformer
+================================================================================
+
+File: results/semantic_branch/02_mse_distillation/results_summary.txt
+
+What: Trained a separate Whisper Small encoder to match IndicConformer features
+      using frame-level MSE loss. IndicConformer is a Conformer model trained on
+      17,000+ hours of Indian language speech (22 languages).
+      Evaluated with CTC head on Hindi+Marathi only (IndicConformer has no English).
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+IndicConformer (teacher)       600M      39.01%     44.61%       N/A     59.90%
+Semantic MSE Student           244M      39.72%     68.11%       N/A     47.86%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Notes:
+  - Student roughly matches teacher on Hindi (39.72% vs 39.01%)
+  - Much worse on Marathi (68.11% vs 44.61%)
+  - This encoder is used as the "semantic branch" in the combined model
+
+================================================================================
+EXPERIMENT 6: COMBINED BRANCH — Dual-Encoder Gated Fusion
+================================================================================
+
+File: results/combined_branch/01_feature_fusion/test_results.txt
+Predictions: results/combined_branch/01_feature_fusion/test_predictions_all.txt
+Mismatches: results/combined_branch/01_feature_fusion/test_predictions_mismatches.txt
+
+What: Combined two specialized encoders via a learned gated fusion module:
+      - Acoustic encoder: distilled from Kid-Whisper (children's speech expert)
+      - Semantic encoder: distilled from IndicConformer (Indian language expert)
+      Both encoders FROZEN. Only GatedFusion (~1.18M) + CTC head (~65K) trained.
+      Total trainable: ~1.25M parameters out of ~490M total.
+
+      Fusion equation: gate = σ(W·[feat_a; feat_s] + b)
+                       fused = gate ⊙ feat_a + (1-gate) ⊙ feat_s
+
+      Based on Gated Multimodal Units (Arevalo et al., ICLR 2017).
+      26 epochs on full training set. Best dev WER: 16.61% at epoch 26.
+
+Model                          Params    Hindi    Marathi    English    Overall
+------------------------------ -------- -------- ---------- ---------- ----------
+Acoustic branch alone          244M      17.83%     26.11%     17.33%     19.96%
+Gated Fusion (ours)           ~490M      16.85%     25.01%     16.06%     18.92%
+------------------------------ -------- -------- ---------- ---------- ----------
+
+Improvement (Acoustic → Combined):
+  Hindi:   -0.98% absolute
+  Marathi: -1.10% absolute
+  English: -1.27% absolute
+  Overall: -1.04% absolute
+
+Per-clip analysis (1695 test clips):
+  256 clips improved (combined better than acoustic)
+  174 clips degraded (combined worse than acoustic)
+  565 clips same WER
+  700 clips both already perfect (0% WER)
+
+Notes:
+  - Consistent improvement across all 3 languages
+  - Modest gain (1.04%) because both encoders share same architecture and
+    both were distilled from speech models → redundant features
+  - Encoders were FROZEN — fusion can only SELECT between existing features,
+    not create new complementary ones
+  - Future: unfreeze encoders with differential LR for co-adaptation
+
+================================================================================
+FULL COMPARISON TABLE (UPDATED)
+================================================================================
+
+Model                          Trained   Hindi    Marathi    English    Overall
+                               on ASER?
+------------------------------ -------- -------- ---------- ---------- ----------
+Whisper Small (244M)           No       103.6%    132.7%      46.2%    106.3%
+Kid-Whisper Medium (769M)      No       247.6%    333.7%      37.6%    252.3%
+IndicConformer (600M)          No        32.4%     44.9%       N/A      36.0%*
+Distilled + Whisper Dec (244M) Yes      177.4%    153.1%     131.0%    167.1%
+Sequential CTC (244M)          Yes       78.7%     96.7%      60.5%     81.9%
+Joint Training (244M)          Yes       17.9%     26.1%      17.3%     20.0%
+Semantic MSE (244M)            Yes       39.7%     68.1%       N/A      47.9%*
+Gated Fusion (ours, ~490M)     Yes       16.9%     25.0%      16.1%     18.9%
+------------------------------ -------- -------- ---------- ---------- ----------
+* Hindi+Marathi only (no English support)
+
+================================================================================
 PENDING EXPERIMENTS
 ================================================================================
 
-1. Joint Training from Scratch (no warm start)
-   - Start from pretrained Whisper Small (no intermediate checkpoints)
-   - Train with MSE+CTC from beginning
-   - Purpose: isolate joint training architecture contribution vs warm start
-   - Status: NOT YET RUN
+1. Whisper Small seq2seq fine-tuning baseline (running — HPC job 132780)
+   - Full Whisper encoder+decoder, BPE tokenizer, cross-entropy loss
+   - Purpose: compare our 1.25M-param fusion vs full 244M fine-tuning
+
+2. Unfrozen encoder gated fusion
+   - Same as Experiment 6 but encoders unfrozen with differential LR
+   - Encoder LR: 1e-5, Fusion LR: 1e-3
+   - Purpose: allow encoders to co-adapt for complementary features
+
+3. Kid-Whisper Medium seq2seq fine-tuning baseline
+   - Needs model pre-cached on HPC
 
 ================================================================================
+

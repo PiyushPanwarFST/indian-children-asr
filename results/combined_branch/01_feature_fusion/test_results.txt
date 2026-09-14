@@ -1,0 +1,14 @@
+Combined Branch (Gated Fusion) — TEST SET Results
+============================================================
+Combined checkpoint: epoch 26, dev WER 16.61%
+Test clips: 1695
+
+System                                    Overall    Hindi  Marathi  English
+---------------------------------------- -------- -------- -------- --------
+Acoustic (Kid-Whisper dist.)               19.96%   17.83%   26.11%   17.33%
+Combined (Gated Fusion)                    18.92%   16.85%   25.01%   16.06%
+
+Improvement: -1.04% absolute (Acoustic → Combined)
+  English: -1.27%
+  Hindi: -0.98%
+  Marathi: -1.10%

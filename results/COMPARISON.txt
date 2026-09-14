@@ -1,41 +1,53 @@
 # ASR Model Comparison on ASER Test Set
-# Date: 2026-09-09
+# Date: 2026-09-14 (updated)
 # Test set: 1695 clips (782 Hindi, 366 Marathi, 547 English)
-# Note: Semantic branch evaluated on 1148 clips (Hindi+Marathi only, no English)
+# Note: Semantic branch & IndicConformer evaluated on 1148 clips (Hindi+Marathi only, no English)
 
-=====================================================================================
-  Model                                         Hindi    Marathi    English    Overall
-  ---------------------------------------------------------------------------
-  # Baselines
-  ---------------------------------------------------------------------------
-  Whisper Small (244M)                        161.81%    170.78%     47.42%    126.83%
-  IndicConformer 600M                          39.01%     44.61%        N/A     59.90%
-  Kid-Whisper Medium MyST (769M)              454.66%    656.45%     37.35%    363.56%
-  Kid-Whisper Medium MyST+CSLU (769M)         714.32%   1083.20%     58.46%    582.31%
-  ---------------------------------------------------------------------------
-  # CARE Pipeline — Acoustic Branch (Kid-Whisper teacher)
-  ---------------------------------------------------------------------------
-  Acoustic Distillation Student (244M)         177.42%   153.12%   130.97%    167.10%
-  Sequential CTC Student (244M)                 78.66%    96.72%    60.51%     81.86%
-  Joint Training Student (244M)                  17.85%    26.11%    17.33%    19.97%
-  ---------------------------------------------------------------------------
-  # CARE Pipeline — Semantic Branch (IndicConformer teacher)
-  ---------------------------------------------------------------------------
-  Semantic MSE Student (244M)                   39.72%    68.11%       N/A     47.86%
-=====================================================================================
+=================================================================================================
+  Model                                         Hindi    Marathi    English    Overall   Params
+  -----------------------------------------------------------------------------------------------
+  # Zero-Shot Baselines (no training on ASER)
+  -----------------------------------------------------------------------------------------------
+  Whisper Small                               161.81%    170.78%     47.42%    126.83%    244M
+  Kid-Whisper Medium MyST                     454.66%    656.45%     37.35%    363.56%    769M
+  IndicConformer                               39.01%     44.61%        N/A     59.90%    600M
+  -----------------------------------------------------------------------------------------------
+  # Acoustic Branch — Kid-Whisper KD Pipeline (Whisper Small student)
+  -----------------------------------------------------------------------------------------------
+  Step 1: MSE Distillation (Whisper decoder)  177.42%    153.12%    130.97%    167.10%    244M
+  Step 2: Sequential CTC (frozen encoder)      78.66%     96.72%     60.51%     81.86%    244M
+  Step 3: Joint Training (MSE+CTC, unfrozen)   17.83%     26.11%     17.33%     19.96%    244M
+  -----------------------------------------------------------------------------------------------
+  # Semantic Branch — IndicConformer KD Pipeline (Whisper Small student)
+  -----------------------------------------------------------------------------------------------
+  Semantic MSE Student                         39.72%     68.11%        N/A     47.86%    244M
+  -----------------------------------------------------------------------------------------------
+  # Combined Branch — Dual-Encoder Gated Fusion
+  -----------------------------------------------------------------------------------------------
+  Gated Fusion (frozen encoders)               16.85%     25.01%     16.06%     18.92%   ~490M*
+  Improvement vs acoustic alone                -0.98%     -1.10%     -1.27%     -1.04%
+  -----------------------------------------------------------------------------------------------
+  # Baselines — Fine-tuning (IN PROGRESS)
+  -----------------------------------------------------------------------------------------------
+  Whisper Small seq2seq fine-tuned                 ?          ?          ?          ?      244M
+  Kid-Whisper Medium seq2seq fine-tuned            ?          ?          ?          ?      769M
+=================================================================================================
 
-# Role Assignment (decided by benchmark data)
+* Combined model: 2 × Whisper Small encoders (244M each, FROZEN) + GatedFusion (~1.18M)
+  + CTC head (~65K). Only ~1.25M params are trainable during fusion training.
 
-  Semantic Teacher : IndicConformer 600M
-                     Best Hindi (39.01%) & Marathi (44.61%)
-                     Trained on Indian languages (22 languages)
+# Best Result: Gated Fusion at 18.92% overall WER
+# Key: Combining children's speech knowledge (Kid-Whisper) with Indian language
+#      knowledge (IndicConformer) via learned per-frame, per-dimension gating.
 
-  Acoustic Teacher : Kid-Whisper Medium MyST
-                     Best English children's speech (37.35%)
-                     Fine-tuned on MyST children's speech dataset
 
-  Student          : Whisper Small
-                     General-purpose baseline, room to improve on all languages
-                     Hindi: 161.81% → target closer to 39.01%
-                     Marathi: 170.78% → target closer to 44.61%
-                     English: 47.42% → target closer to 37.35%
+# Technique Reference
+  Fusion approach based on: Gated Multimodal Units (Arevalo et al., ICLR 2017)
+  Dual-encoder concept inspired by: CARE (Dutta & Ganapathy, IEEE TASLP 2025)
+  Knowledge distillation: Hinton et al., 2015
+
+
+# Pending Experiments
+  1. Whisper Small seq2seq full fine-tuning on ASER (running — job 132780)
+  2. Unfrozen encoder fusion (differential LR: encoder 1e-5, fusion 1e-3)
+  3. Kid-Whisper Medium seq2seq fine-tuning on ASER

@@ -335,6 +335,7 @@ def prepare_labels(text, language):
     Tokenize ground truth text using Whisper's BPE tokenizer.
     Sets language and task tokens for proper decoder prompting.
     Returns token IDs with proper special tokens.
+    Truncates to 448 tokens (Whisper's max decoder position embeddings).
     """
     whisper_lang = WHISPER_LANG_MAP.get(language, "english")
 
@@ -343,6 +344,10 @@ def prepare_labels(text, language):
 
     # Tokenize the text
     labels = tokenizer(text, return_tensors="pt").input_ids.squeeze(0)
+
+    # Whisper decoder max position embeddings = 448
+    if labels.shape[0] > 448:
+        labels = labels[:448]
 
     return labels
 
