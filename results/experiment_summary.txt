@@ -235,8 +235,5 @@ PENDING EXPERIMENTS
    - Encoder LR: 1e-5, Fusion LR: 1e-3
    - Purpose: allow encoders to co-adapt for complementary features
 
-3. Kid-Whisper Medium seq2seq fine-tuning baseline
-   - Needs model pre-cached on HPC
-
 ================================================================================
 

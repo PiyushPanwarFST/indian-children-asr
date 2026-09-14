@@ -30,7 +30,6 @@
   # Baselines — Fine-tuning (IN PROGRESS)
   -----------------------------------------------------------------------------------------------
   Whisper Small seq2seq fine-tuned                 ?          ?          ?          ?      244M
-  Kid-Whisper Medium seq2seq fine-tuned            ?          ?          ?          ?      769M
 =================================================================================================
 
 * Combined model: 2 × Whisper Small encoders (244M each, FROZEN) + GatedFusion (~1.18M)
@@ -50,4 +49,3 @@
 # Pending Experiments
   1. Whisper Small seq2seq full fine-tuning on ASER (running — job 132780)
   2. Unfrozen encoder fusion (differential LR: encoder 1e-5, fusion 1e-3)
-  3. Kid-Whisper Medium seq2seq fine-tuning on ASER

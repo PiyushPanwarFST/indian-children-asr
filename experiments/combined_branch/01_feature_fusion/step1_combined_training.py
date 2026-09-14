@@ -3,15 +3,20 @@ Combined Branch — Dual-Encoder Feature Fusion Training
 =======================================================
 
 WHAT THIS SCRIPT DOES:
-    Fuses features from TWO frozen Whisper Small encoders:
+    Fuses features from TWO Whisper Small encoders:
       1. Acoustic encoder (trained with Kid-Whisper MSE + CTC, 19.97% WER)
       2. Semantic encoder (trained with IndicConformer MSE, 49.02% WER)
 
     A trainable GatedFusion module learns per-frame weighting between the two
     encoders, and a warm-started CTC head decodes the fused features.
 
-    Both encoders are FROZEN — only the fusion layer + CTC head train.
-    Total trainable: ~1.25M params (vs ~89M in joint training).
+    TWO MODES:
+      1. Frozen (default): Both encoders FROZEN — only fusion + CTC head train.
+         Total trainable: ~1.25M params. Fast, stable.
+      2. Unfrozen (--unfreeze_encoders): Both encoders fine-tuned with a SMALL LR
+         (--encoder_lr, default 1e-5) while fusion + CTC head use normal LR (1e-3).
+         Total trainable: ~89M params. Lets encoders co-adapt for complementary features.
+         Uses gradient checkpointing to fit in GPU memory.
 
 WHY THIS SHOULD WORK:
     The acoustic encoder captures children's voice patterns (Kid-Whisper).
@@ -21,8 +26,8 @@ WHY THIS SHOULD WORK:
 ARCHITECTURE:
     ┌───────────────────────────────────────────────────────────────┐
     │  Audio → Mel → SpecAugment (shared)                          │
-    │       ├→ Acoustic Encoder (FROZEN) → feat_a (T, 768)         │
-    │       └→ Semantic Encoder (FROZEN) → feat_s (T, 768)         │
+    │       ├→ Acoustic Encoder (frozen/unfrozen) → feat_a (T,768) │
+    │       └→ Semantic Encoder (frozen/unfrozen) → feat_s (T,768) │
     │            ↓ concat → (T, 1536)                              │
     │       GatedFusion (TRAINABLE):                               │
     │         gate = σ(Linear(1536→768))                           │
@@ -97,6 +102,12 @@ parser.add_argument("--ctc_ckpt", type=str, default=None,
                     help="CTC head warm-start (default: from acoustic checkpoint)")
 parser.add_argument("--resume", type=str, default=None,
                     help="Resume from combined training checkpoint")
+parser.add_argument("--unfreeze_encoders", action="store_true",
+                    help="Fine-tune both encoders with small LR (default: frozen)")
+parser.add_argument("--encoder_lr", type=float, default=1e-5,
+                    help="LR for encoder params when unfrozen (default: 1e-5, 100x smaller than fusion LR)")
+parser.add_argument("--grad_checkpoint", action="store_true",
+                    help="Gradient checkpointing to save GPU memory (needed when unfreezing)")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--log_every", type=int, default=10)
 args = parser.parse_args()
@@ -107,7 +118,8 @@ ASER_ROOT    = PROJECT_ROOT / "ASER-Dataset"
 TRAIN_CSV    = ASER_ROOT / "splits" / "asr_train.csv"
 DEV_CSV      = ASER_ROOT / "splits" / "asr_dev.csv"
 VOCAB_PATH   = ASER_ROOT / "vocab.json"
-CKPT_DIR     = PROJECT_ROOT / "checkpoints" / "combined"
+CKPT_SUBDIR  = "combined_unfrozen" if "--unfreeze_encoders" in sys.argv else "combined"
+CKPT_DIR     = PROJECT_ROOT / "checkpoints" / CKPT_SUBDIR
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 SAMPLE_RATE = 16000
@@ -303,9 +315,9 @@ WHISPER_ID = "openai/whisper-small"
 feat_extractor = WhisperFeatureExtractor.from_pretrained(WHISPER_ID)
 
 
-def load_frozen_encoder(checkpoint_path, label):
+def load_encoder(checkpoint_path, label, freeze=True):
     """
-    Load a Whisper Small encoder from checkpoint and freeze all parameters.
+    Load a Whisper Small encoder from checkpoint, optionally frozen.
 
     Handles two checkpoint formats:
       - encoder_state_dict (from joint/semantic training)
@@ -314,9 +326,10 @@ def load_frozen_encoder(checkpoint_path, label):
     Args:
         checkpoint_path: Relative path from PROJECT_ROOT to the .pt checkpoint
         label: Display label for logging (e.g., "ACOUSTIC ENCODER")
+        freeze: If True, freeze all params. If False, keep trainable.
 
     Returns:
-        Frozen encoder module (requires_grad=False, eval mode)
+        Encoder module (frozen or trainable depending on freeze flag)
     """
     print(f"\n  [{label}] Loading Whisper Small encoder...")
     whisper_model = WhisperModel.from_pretrained(WHISPER_ID)
@@ -358,11 +371,18 @@ def load_frozen_encoder(checkpoint_path, label):
     epoch_info = ckpt.get("epoch", "?")
     print(f"    Loaded from epoch {epoch_info}")
 
-    # Freeze completely
-    for param in encoder.parameters():
-        param.requires_grad = False
-    encoder.eval()
-    print(f"    FROZEN ({sum(p.numel() for p in encoder.parameters()):,} params, requires_grad=False)")
+    n_params = sum(p.numel() for p in encoder.parameters())
+    if freeze:
+        for param in encoder.parameters():
+            param.requires_grad = False
+        encoder.eval()
+        print(f"    FROZEN ({n_params:,} params, requires_grad=False)")
+    else:
+        encoder.train()
+        if args.grad_checkpoint:
+            encoder.gradient_checkpointing_enable()
+            print(f"    Gradient checkpointing ENABLED")
+        print(f"    UNFROZEN ({n_params:,} params, requires_grad=True, lr={args.encoder_lr})")
 
     # Clean up
     del whisper_model, ckpt
@@ -372,8 +392,9 @@ def load_frozen_encoder(checkpoint_path, label):
 
 
 # ── Load both encoders ───────────────────────────────────────────────────────
-acoustic_encoder = load_frozen_encoder(args.acoustic_ckpt, "ACOUSTIC ENCODER")
-semantic_encoder = load_frozen_encoder(args.semantic_ckpt, "SEMANTIC ENCODER")
+freeze_encoders = not args.unfreeze_encoders
+acoustic_encoder = load_encoder(args.acoustic_ckpt, "ACOUSTIC ENCODER", freeze=freeze_encoders)
+semantic_encoder = load_encoder(args.semantic_ckpt, "SEMANTIC ENCODER", freeze=freeze_encoders)
 
 
 # ── Gated Fusion module ─────────────────────────────────────────────────────
@@ -449,14 +470,18 @@ if DEVICE == "cuda":
 acoustic_params = sum(p.numel() for p in acoustic_encoder.parameters())
 semantic_params = sum(p.numel() for p in semantic_encoder.parameters())
 ctc_params = sum(p.numel() for p in ctc_head.parameters())
-total_trainable = fusion_params + ctc_params
+encoder_trainable = (acoustic_params + semantic_params) if args.unfreeze_encoders else 0
+total_trainable = fusion_params + ctc_params + encoder_trainable
 
+enc_status = "UNFROZEN" if args.unfreeze_encoders else "FROZEN"
 print(f"\n  ┌─ Parameter Summary ──────────────────────────────────────────")
-print(f"  │ Acoustic encoder: {acoustic_params:,} (FROZEN)")
-print(f"  │ Semantic encoder: {semantic_params:,} (FROZEN)")
+print(f"  │ Acoustic encoder: {acoustic_params:,} ({enc_status})")
+print(f"  │ Semantic encoder: {semantic_params:,} ({enc_status})")
 print(f"  │ Gated fusion:     {fusion_params:,} (trainable)")
 print(f"  │ CTC head:         {ctc_params:,} (trainable)")
 print(f"  │ Total trainable:  {total_trainable:,}")
+if args.unfreeze_encoders:
+    print(f"  │ Encoder LR: {args.encoder_lr} | Fusion LR: {args.lr}")
 print(f"  └──────────────────────────────────────────────────────────────")
 
 if DEVICE == "cuda":
@@ -524,10 +549,14 @@ mel = feat_extractor(test_wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors
 mel_aug = apply_spec_augment(mel.input_features.clone())
 print(f"  Mel: {tuple(mel.input_features.shape)} → SpecAugment applied")
 
-# Both encoders forward (no grad)
-with torch.no_grad():
+# Both encoders forward
+if args.unfreeze_encoders:
     acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
     semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
+else:
+    with torch.no_grad():
+        acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
+        semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
 
 real_frames = compute_real_frames(len(test_wav))
 acoustic_feat = acoustic_out[:, :real_frames, :]
@@ -562,8 +591,9 @@ if target_indices and real_frames > len(target_indices):
     ctc_grads = sum(1 for p in ctc_head.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     acoustic_grads = sum(1 for p in acoustic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     semantic_grads = sum(1 for p in semantic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+    enc_expect = ">0" if args.unfreeze_encoders else "should=0"
     print(f"  Gradients: fusion={fusion_grads}>0 | ctc_head={ctc_grads}>0 | "
-          f"acoustic_enc={acoustic_grads}(should=0) | semantic_enc={semantic_grads}(should=0)")
+          f"acoustic_enc={acoustic_grads}({enc_expect}) | semantic_enc={semantic_grads}({enc_expect})")
 
     # Greedy decode check
     pred = ctc_greedy_decode(char_logits.squeeze(0).detach(), idx_to_char)
@@ -587,9 +617,19 @@ print("=" * 70)
 print("STEP 6: Training setup")
 print("=" * 70)
 
-# Trainable params: fusion + CTC head only
-trainable_params = list(fusion.parameters()) + list(ctc_head.parameters())
-optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
+# Trainable params: fusion + CTC head (always), encoders (if unfrozen)
+fusion_ctc_params = list(fusion.parameters()) + list(ctc_head.parameters())
+
+if args.unfreeze_encoders:
+    encoder_params = list(acoustic_encoder.parameters()) + list(semantic_encoder.parameters())
+    trainable_params = encoder_params + fusion_ctc_params
+    optimizer = torch.optim.AdamW([
+        {"params": encoder_params, "lr": args.encoder_lr},   # small LR for encoders
+        {"params": fusion_ctc_params, "lr": args.lr},         # normal LR for fusion + CTC
+    ], weight_decay=0.01)
+else:
+    trainable_params = fusion_ctc_params
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
 
 num_epochs = args.epochs
 total_steps_est = len(train_clips) * num_epochs  # no grad_accum
@@ -617,10 +657,14 @@ if args.resume:
 
 ctc_loss_fn = nn.CTCLoss(blank=BLANK_IDX, zero_infinity=True)
 
-print(f"  Optimizer: AdamW (lr={args.lr}, wd=0.01)")
+if args.unfreeze_encoders:
+    print(f"  Optimizer: AdamW (encoder_lr={args.encoder_lr}, fusion_lr={args.lr}, wd=0.01)")
+else:
+    print(f"  Optimizer: AdamW (lr={args.lr}, wd=0.01)")
 print(f"  Scheduler: linear warmup ({warmup_steps} steps) + cosine decay")
 print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)}")
-print(f"  Trainable: {total_trainable:,} params (fusion + CTC head)")
+trainable_desc = "encoders + fusion + CTC head" if args.unfreeze_encoders else "fusion + CTC head"
+print(f"  Trainable: {total_trainable:,} params ({trainable_desc})")
 print(f"  Dropout: {args.dropout}")
 if args.patience > 0:
     print(f"  Early stopping: patience={args.patience} (on dev WER)")
@@ -731,6 +775,9 @@ training_start = time.time()
 
 fusion.train()
 ctc_head.train()
+if args.unfreeze_encoders:
+    acoustic_encoder.train()
+    semantic_encoder.train()
 
 for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
     random.shuffle(train_clips)
@@ -757,10 +804,14 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             mel_features = apply_spec_augment(mel.input_features.clone())
             mel_gpu = mel_features.to(DEVICE)
 
-            # ── Both encoders forward (no grad) ──
-            with torch.no_grad():
+            # ── Both encoders forward ──
+            if args.unfreeze_encoders:
                 a_out = acoustic_encoder(mel_gpu).last_hidden_state
                 s_out = semantic_encoder(mel_gpu).last_hidden_state
+            else:
+                with torch.no_grad():
+                    a_out = acoustic_encoder(mel_gpu).last_hidden_state
+                    s_out = semantic_encoder(mel_gpu).last_hidden_state
 
             real_frames = compute_real_frames(num_samples)
             a_feat = a_out[:, :real_frames, :]  # (1, T, 768)
@@ -879,6 +930,9 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             "global_step": global_step,
             "args": vars(args),
         }
+        if args.unfreeze_encoders:
+            ckpt_data["acoustic_encoder_state_dict"] = acoustic_encoder.state_dict()
+            ckpt_data["semantic_encoder_state_dict"] = semantic_encoder.state_dict()
 
         if dev_wer < best_dev_wer:
             best_dev_wer = dev_wer
