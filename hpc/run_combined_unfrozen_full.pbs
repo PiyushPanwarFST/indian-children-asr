@@ -35,8 +35,8 @@ echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>
 echo "============================================================" | tee -a $LOGFILE
 
 python -u experiments/combined_branch/01_feature_fusion/step1_combined_training.py \
-    --epochs 25 \
-    --patience 7 \
+    --epochs 30 \
+    --patience 10 \
     --lr 1e-3 \
     --encoder_lr 1e-5 \
     --warmup_steps 500 \
