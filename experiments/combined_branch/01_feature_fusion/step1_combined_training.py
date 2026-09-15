@@ -439,6 +439,13 @@ if args.resume:
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     fusion.load_state_dict(ckpt["fusion_state_dict"])
     ctc_head.load_state_dict(ckpt["ctc_head_state_dict"])
+    # Restore encoder weights if they were unfrozen during previous training
+    if "acoustic_encoder_state_dict" in ckpt:
+        acoustic_encoder.load_state_dict(ckpt["acoustic_encoder_state_dict"])
+        print(f"    Acoustic encoder restored from checkpoint")
+    if "semantic_encoder_state_dict" in ckpt:
+        semantic_encoder.load_state_dict(ckpt["semantic_encoder_state_dict"])
+        print(f"    Semantic encoder restored from checkpoint")
     start_epoch = ckpt.get("epoch", 0)
     best_dev_wer = ckpt.get("dev_wer", float("inf"))
     print(f"    Resuming from epoch {start_epoch}, best dev WER: {best_dev_wer:.2f}%")
