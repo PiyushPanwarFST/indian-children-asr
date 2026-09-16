@@ -41,7 +41,6 @@ python -u experiments/combined_branch/01_feature_fusion/step1_combined_training.
     --encoder_lr 1e-5 \
     --warmup_steps 500 \
     --dropout 0.1 \
-    --unfreeze_encoders \
     --grad_checkpoint \
     --acoustic_ckpt checkpoints/joint/joint_best_wer.pt \
     --semantic_ckpt checkpoints/semantic_mse/best_dev.pt \

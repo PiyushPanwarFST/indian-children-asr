@@ -1,27 +1,39 @@
 """
-Combined Branch Evaluation — Full Comparison on Test Set
-=========================================================
+Combined Branch Evaluation — Test Set WER with Side-by-Side Comparison
+======================================================================
 
-PURPOSE:
-    Evaluate the combined (dual-encoder fusion) model on test set with
-    side-by-side comparison:
-      - Ground Truth
-      - Baseline Whisper Small (no fine-tuning)
-      - Acoustic branch only (joint-trained encoder + CTC)
-      - Combined (acoustic + semantic fusion + CTC)
-    Plus corpus-level WER per language and overall.
+WHAT THIS SCRIPT DOES:
+    Evaluates the trained dual-encoder gated fusion model on the test set.
+    Compares three systems side-by-side:
+      1. Baseline Whisper Small (244M, no fine-tuning) — seq2seq decode
+      2. Acoustic-only encoder + CTC head (single distilled encoder)
+      3. Combined fusion model (dual-encoder + gated fusion + CTC head)
 
-MODELS:
-    1. Baseline: Whisper Small (244M, no fine-tuning)
-    2. Acoustic only: Joint-trained encoder + CTC head (19.97% WER)
-    3. Combined: Acoustic + Semantic encoders → GatedFusion → CTC head
+    Reports per-language (Hindi, Marathi, English) and overall WER.
+    Saves detailed results CSV and summary TXT.
+
+IMPORTANT — ENCODER LOADING:
+    Since both encoders are UNFROZEN during combined training, the combined
+    checkpoint contains CO-ADAPTED encoder weights. This script loads encoder
+    weights FROM THE COMBINED CHECKPOINT, not from the original distilled
+    checkpoints. The original checkpoints are only used for the acoustic-only
+    comparison model.
+
+ARCHITECTURE (same as training, but no SpecAugment/dropout):
+    Audio → Mel → Acoustic Encoder → feat_a (T, 768)
+                → Semantic Encoder → feat_s (T, 768)
+    [feat_a; feat_s] → GatedFusion → fused (T, 768) → CTC Head → logits (T, 85)
+    logits → greedy CTC decode → predicted text
 
 Usage:
     # Quick test (10 clips per language)
     python step2_combined_evaluate.py --per_lang 10
 
-    # Full test set
+    # Full test set evaluation
     python step2_combined_evaluate.py --per_lang 9999 --eval_set test
+
+    # Skip baseline to save GPU memory
+    python step2_combined_evaluate.py --per_lang 9999 --skip_baseline
 """
 
 import argparse
@@ -44,12 +56,12 @@ from transformers import WhisperModel, WhisperProcessor, WhisperForConditionalGe
 from tqdm import tqdm
 from pathlib import Path
 
-# ─── Project imports ───
+# ── Project imports ──────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.utils.wer import normalize_text, compute_corpus_wer
 
-# ─── Config ───
+# ── Paths and constants ─────────────────────────────────────────────────────
 ASER_ROOT = PROJECT_ROOT / "ASER-Dataset"
 DEV_CSV = ASER_ROOT / "splits" / "asr_dev.csv"
 TEST_CSV = ASER_ROOT / "splits" / "asr_test.csv"
@@ -62,8 +74,20 @@ SAMPLE_RATE = 16000
 MAX_DURATION = 30
 
 
-# ─── Vocabulary ───
+# ══════════════════════════════════════════════════════════════════════════════
+# Vocabulary helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
 def load_vocab(vocab_path):
+    """
+    Load character vocabulary from JSON file.
+
+    Args:
+        vocab_path (str): Path to vocab.json
+
+    Returns:
+        tuple: (char_to_idx, idx_to_char, vocab_size)
+    """
     with open(vocab_path, "r", encoding="utf-8") as f:
         char_to_idx = json.load(f)
     idx_to_char = {v: k for k, v in char_to_idx.items()}
@@ -71,12 +95,22 @@ def load_vocab(vocab_path):
 
 
 def ctc_greedy_decode(logits, idx_to_char):
+    """
+    Greedy CTC decode: argmax → collapse repeats → remove blanks → text.
+
+    Args:
+        logits (Tensor): Shape (T, vocab_size) — raw logits from CTC head
+        idx_to_char (dict): Index-to-character mapping
+
+    Returns:
+        str: Decoded text
+    """
     predicted_ids = logits.argmax(dim=-1).tolist()
     decoded_ids = []
     prev_id = None
     for idx in predicted_ids:
         if idx != prev_id:
-            if idx != 0:
+            if idx != 0:  # skip blank token (index 0)
                 decoded_ids.append(idx)
         prev_id = idx
     chars = []
@@ -91,8 +125,20 @@ def ctc_greedy_decode(logits, idx_to_char):
     return "".join(chars)
 
 
-# ─── Audio ───
+# ══════════════════════════════════════════════════════════════════════════════
+# Audio loading
+# ══════════════════════════════════════════════════════════════════════════════
+
 def load_audio(audio_path):
+    """
+    Load audio file → 16kHz mono numpy array, capped at MAX_DURATION seconds.
+
+    Args:
+        audio_path (str): Path to audio file
+
+    Returns:
+        np.ndarray: 1D audio samples at 16kHz
+    """
     wav, sr = torchaudio.load(audio_path)
     if sr != SAMPLE_RATE:
         wav = torchaudio.functional.resample(wav, sr, SAMPLE_RATE)
@@ -103,11 +149,27 @@ def load_audio(audio_path):
 
 
 def compute_real_frames(num_samples):
+    """
+    Compute encoder output frames: samples // 160 // 2, capped at 1500.
+
+    Args:
+        num_samples (int): Number of audio samples
+
+    Returns:
+        int: Number of real encoder frames
+    """
     return min(num_samples // 160 // 2, 1500)
 
 
-# ─── GatedFusion (must match training) ───
+# ══════════════════════════════════════════════════════════════════════════════
+# GatedFusion module (must match training definition)
+# ══════════════════════════════════════════════════════════════════════════════
+
 class GatedFusion(nn.Module):
+    """
+    Gated fusion module — identical architecture to training script.
+    At eval time, dropout is set to 0.0 (no regularization needed).
+    """
     def __init__(self, dim=768, dropout=0.0):
         super().__init__()
         self.gate_linear = nn.Linear(dim * 2, dim)
@@ -123,58 +185,90 @@ class GatedFusion(nn.Module):
         return fused
 
 
-# ─── Model Loading ───
-def load_combined_model(combined_ckpt, acoustic_ckpt, semantic_ckpt, vocab_size):
-    """Load both frozen encoders + trained fusion + CTC head."""
-    print(f"\n  Loading combined model...")
+# ══════════════════════════════════════════════════════════════════════════════
+# Model loading
+# ══════════════════════════════════════════════════════════════════════════════
 
-    # Acoustic encoder
-    print(f"  [ACOUSTIC] Loading from {acoustic_ckpt}")
-    whisper_a = WhisperModel.from_pretrained(WHISPER_ID)
-    acoustic_encoder = whisper_a.encoder.to(DEVICE)
-    a_ckpt = torch.load(acoustic_ckpt, map_location=DEVICE, weights_only=False)
-    if "encoder_state_dict" in a_ckpt:
-        acoustic_encoder.load_state_dict(a_ckpt["encoder_state_dict"])
-    elif "model_state_dict" in a_ckpt:
-        state = {k[len("encoder."):]: v for k, v in a_ckpt["model_state_dict"].items() if k.startswith("encoder.")}
-        acoustic_encoder.load_state_dict(state)
-    acoustic_encoder.eval()
-    for p in acoustic_encoder.parameters():
-        p.requires_grad = False
-    del whisper_a, a_ckpt
+def load_combined_model(combined_ckpt, vocab_size):
+    """
+    Load the full combined model from a single combined checkpoint.
 
-    # Semantic encoder
-    print(f"  [SEMANTIC] Loading from {semantic_ckpt}")
-    whisper_s = WhisperModel.from_pretrained(WHISPER_ID)
-    semantic_encoder = whisper_s.encoder.to(DEVICE)
-    s_ckpt = torch.load(semantic_ckpt, map_location=DEVICE, weights_only=False)
-    semantic_encoder.load_state_dict(s_ckpt["encoder_state_dict"])
-    semantic_encoder.eval()
-    for p in semantic_encoder.parameters():
-        p.requires_grad = False
-    del whisper_s, s_ckpt
+    CRITICAL: Since encoders are unfrozen during training, the combined checkpoint
+    contains co-adapted encoder weights. We load EVERYTHING from this checkpoint:
+    acoustic encoder, semantic encoder, fusion module, and CTC head.
 
-    # Fusion + CTC head from combined checkpoint
-    print(f"  [COMBINED] Loading from {combined_ckpt}")
+    Args:
+        combined_ckpt (str): Path to combined checkpoint (e.g., best_wer.pt)
+        vocab_size (int): Number of vocabulary tokens (85)
+
+    Returns:
+        tuple: (acoustic_encoder, semantic_encoder, fusion, ctc_head) — all in eval mode
+    """
+    print(f"\n  Loading combined model from: {combined_ckpt}")
     c_ckpt = torch.load(combined_ckpt, map_location=DEVICE, weights_only=False)
-    fusion = GatedFusion(dim=768, dropout=0.0).to(DEVICE)  # no dropout at eval
-    fusion.load_state_dict(c_ckpt["fusion_state_dict"])
-    fusion.eval()
-
-    ctc_head = nn.Linear(768, vocab_size).to(DEVICE)
-    ctc_head.load_state_dict(c_ckpt["ctc_head_state_dict"])
-    ctc_head.eval()
 
     epoch = c_ckpt.get("epoch", "?")
     dev_wer = c_ckpt.get("dev_wer", 0)
     print(f"    Epoch: {epoch}, Dev WER: {dev_wer:.2f}%")
-    del c_ckpt
 
+    # Load acoustic encoder with co-adapted weights from combined checkpoint
+    print(f"  [ACOUSTIC] Loading co-adapted encoder from combined checkpoint...")
+    whisper_a = WhisperModel.from_pretrained(WHISPER_ID)
+    acoustic_encoder = whisper_a.encoder.to(DEVICE)
+    if "acoustic_encoder_state_dict" in c_ckpt:
+        acoustic_encoder.load_state_dict(c_ckpt["acoustic_encoder_state_dict"])
+        print(f"    Loaded co-adapted acoustic encoder weights")
+    else:
+        print(f"    WARNING: No acoustic encoder in checkpoint — using base Whisper weights")
+    acoustic_encoder.eval()
+    for p in acoustic_encoder.parameters():
+        p.requires_grad = False
+    del whisper_a
+
+    # Load semantic encoder with co-adapted weights from combined checkpoint
+    print(f"  [SEMANTIC] Loading co-adapted encoder from combined checkpoint...")
+    whisper_s = WhisperModel.from_pretrained(WHISPER_ID)
+    semantic_encoder = whisper_s.encoder.to(DEVICE)
+    if "semantic_encoder_state_dict" in c_ckpt:
+        semantic_encoder.load_state_dict(c_ckpt["semantic_encoder_state_dict"])
+        print(f"    Loaded co-adapted semantic encoder weights")
+    else:
+        print(f"    WARNING: No semantic encoder in checkpoint — using base Whisper weights")
+    semantic_encoder.eval()
+    for p in semantic_encoder.parameters():
+        p.requires_grad = False
+    del whisper_s
+
+    # Load fusion module
+    fusion = GatedFusion(dim=768, dropout=0.0).to(DEVICE)
+    fusion.load_state_dict(c_ckpt["fusion_state_dict"])
+    fusion.eval()
+    print(f"  [FUSION] Loaded")
+
+    # Load CTC head
+    ctc_head = nn.Linear(768, vocab_size).to(DEVICE)
+    ctc_head.load_state_dict(c_ckpt["ctc_head_state_dict"])
+    ctc_head.eval()
+    print(f"  [CTC HEAD] Loaded")
+
+    del c_ckpt
     return acoustic_encoder, semantic_encoder, fusion, ctc_head
 
 
 def load_acoustic_only_model(acoustic_ckpt, vocab_size):
-    """Load acoustic-only model for comparison."""
+    """
+    Load acoustic-only model (single encoder + CTC head) for comparison.
+
+    This uses the ORIGINAL distilled acoustic encoder (before co-adaptation),
+    so we can compare: single encoder vs dual-encoder fusion.
+
+    Args:
+        acoustic_ckpt (str): Path to acoustic branch checkpoint
+        vocab_size (int): Number of vocabulary tokens
+
+    Returns:
+        tuple: (encoder, ctc_head) — both in eval mode
+    """
     print(f"\n  [ACOUSTIC ONLY] Loading from {acoustic_ckpt}")
     whisper = WhisperModel.from_pretrained(WHISPER_ID)
     encoder = whisper.encoder.to(DEVICE)
@@ -195,8 +289,23 @@ def load_acoustic_only_model(acoustic_ckpt, vocab_size):
     return encoder, ctc_head
 
 
-# ─── Transcription functions ───
+# ══════════════════════════════════════════════════════════════════════════════
+# Transcription functions
+# ══════════════════════════════════════════════════════════════════════════════
+
 def transcribe_baseline(model, processor, audio_np, language):
+    """
+    Transcribe using vanilla Whisper Small (seq2seq with decoder).
+
+    Args:
+        model: WhisperForConditionalGeneration model
+        processor: WhisperProcessor
+        audio_np (np.ndarray): Audio samples at 16kHz
+        language (str): Language name ("Hindi", "Marathi", "English")
+
+    Returns:
+        str: Transcribed text
+    """
     lang_map = {"Hindi": "hi", "Marathi": "mr", "English": "en"}
     lang_code = lang_map.get(language, "en")
     inputs = processor.feature_extractor(audio_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
@@ -211,8 +320,20 @@ def transcribe_baseline(model, processor, audio_np, language):
 
 
 def transcribe_acoustic_only(encoder, ctc_head, feat_extractor, audio_np, idx_to_char):
+    """
+    Transcribe using single acoustic encoder + CTC head.
+
+    Args:
+        encoder: Whisper encoder with distilled weights
+        ctc_head: Linear CTC head
+        feat_extractor: WhisperFeatureExtractor
+        audio_np (np.ndarray): Audio samples at 16kHz
+        idx_to_char (dict): Index-to-character mapping
+
+    Returns:
+        str: CTC-decoded text
+    """
     inputs = feat_extractor(audio_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
-    real_frames = compute_real_frames(len(audio_np) * SAMPLE_RATE // SAMPLE_RATE)  # already in samples
     real_frames = compute_real_frames(len(audio_np))
     with torch.no_grad():
         features = encoder(inputs.input_features.to(DEVICE)).last_hidden_state
@@ -221,6 +342,24 @@ def transcribe_acoustic_only(encoder, ctc_head, feat_extractor, audio_np, idx_to
 
 
 def transcribe_combined(acoustic_enc, semantic_enc, fusion, ctc_head, feat_extractor, audio_np, idx_to_char):
+    """
+    Transcribe using dual-encoder gated fusion model.
+
+    Both encoders process the same mel spectrogram, fusion combines them,
+    CTC head produces character logits, greedy decode gives final text.
+
+    Args:
+        acoustic_enc: Co-adapted acoustic encoder
+        semantic_enc: Co-adapted semantic encoder
+        fusion: GatedFusion module
+        ctc_head: Linear CTC head
+        feat_extractor: WhisperFeatureExtractor
+        audio_np (np.ndarray): Audio samples at 16kHz
+        idx_to_char (dict): Index-to-character mapping
+
+    Returns:
+        str: CTC-decoded text from fused features
+    """
     inputs = feat_extractor(audio_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
     real_frames = compute_real_frames(len(audio_np))
     mel_gpu = inputs.input_features.to(DEVICE)
@@ -232,8 +371,21 @@ def transcribe_combined(acoustic_enc, semantic_enc, fusion, ctc_head, feat_extra
     return ctc_greedy_decode(logits[0], idx_to_char)
 
 
-# ─── Data loading ───
+# ══════════════════════════════════════════════════════════════════════════════
+# Data loading
+# ══════════════════════════════════════════════════════════════════════════════
+
 def load_clips(csv_path, per_lang=10):
+    """
+    Load test/dev clips from CSV, limited to per_lang clips per language.
+
+    Args:
+        csv_path (str): Path to asr_test.csv or asr_dev.csv
+        per_lang (int): Max clips per language (use 9999 for all)
+
+    Returns:
+        tuple: (clips, by_lang) where clips is flat list, by_lang is dict by language
+    """
     by_lang = {}
     aser_root = str(ASER_ROOT)
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -253,31 +405,39 @@ def load_clips(csv_path, per_lang=10):
     return clips, by_lang
 
 
-# ─── Main ───
+# ══════════════════════════════════════════════════════════════════════════════
+# Main evaluation
+# ══════════════════════════════════════════════════════════════════════════════
+
 def main():
     parser = argparse.ArgumentParser(description="Combined Branch Evaluation")
-    parser.add_argument("--per_lang", type=int, default=10)
-    parser.add_argument("--eval_set", type=str, default="test", choices=["dev", "test"])
-    parser.add_argument("--combined_ckpt", type=str, default="checkpoints/combined/best_wer.pt")
-    parser.add_argument("--acoustic_ckpt", type=str, default="checkpoints/joint/joint_best_wer.pt")
-    parser.add_argument("--semantic_ckpt", type=str, default="checkpoints/semantic_mse/best_dev.pt")
-    parser.add_argument("--skip_baseline", action="store_true", help="Skip baseline Whisper (saves memory)")
+    parser.add_argument("--per_lang", type=int, default=10,
+                        help="Max clips per language (9999 for all)")
+    parser.add_argument("--eval_set", type=str, default="test", choices=["dev", "test"],
+                        help="Evaluate on dev or test set")
+    parser.add_argument("--combined_ckpt", type=str,
+                        default="checkpoints/combined_unfrozen/best_wer.pt",
+                        help="Path to combined checkpoint (contains co-adapted encoders)")
+    parser.add_argument("--acoustic_ckpt", type=str,
+                        default="checkpoints/joint/joint_best_wer.pt",
+                        help="Path to acoustic-only checkpoint (for comparison)")
+    parser.add_argument("--skip_baseline", action="store_true",
+                        help="Skip baseline Whisper to save GPU memory")
     args = parser.parse_args()
 
     combined_ckpt = str(PROJECT_ROOT / args.combined_ckpt)
     acoustic_ckpt = str(PROJECT_ROOT / args.acoustic_ckpt)
-    semantic_ckpt = str(PROJECT_ROOT / args.semantic_ckpt)
 
     if not os.path.exists(combined_ckpt):
         print(f"ERROR: Combined checkpoint not found: {combined_ckpt}")
         return
 
-    # Load vocab
+    # Load vocabulary
     print("Loading vocabulary...")
     char_to_idx, idx_to_char, vocab_size = load_vocab(str(VOCAB_PATH))
     print(f"  Vocab: {vocab_size} tokens")
 
-    # Load clips
+    # Load test/dev clips
     eval_csv = str(TEST_CSV) if args.eval_set == "test" else str(DEV_CSV)
     clips, all_clips = load_clips(eval_csv, per_lang=args.per_lang)
     print(f"\n  Evaluating on {len(clips)} clips ({args.eval_set} set)")
@@ -285,7 +445,7 @@ def main():
         n = min(args.per_lang, len(all_clips[lang]))
         print(f"    {lang}: {n} clips")
 
-    # Load models
+    # ── Load models ──────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("Loading models...")
     print("=" * 70)
@@ -293,14 +453,14 @@ def main():
     from transformers import WhisperFeatureExtractor
     feat_extractor = WhisperFeatureExtractor.from_pretrained(WHISPER_ID)
 
-    # Combined model
+    # Combined model — loads EVERYTHING from combined checkpoint
     acoustic_enc, semantic_enc, fusion, ctc_head = load_combined_model(
-        combined_ckpt, acoustic_ckpt, semantic_ckpt, vocab_size)
+        combined_ckpt, vocab_size)
 
-    # Acoustic-only model (for comparison)
+    # Acoustic-only model (for comparison — uses original distilled weights)
     acoustic_only_enc, acoustic_only_ctc = load_acoustic_only_model(acoustic_ckpt, vocab_size)
 
-    # Baseline Whisper
+    # Baseline Whisper (optional)
     baseline_model = None
     baseline_processor = None
     if not args.skip_baseline:
@@ -314,7 +474,7 @@ def main():
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
 
-    # Evaluate
+    # ── Evaluate ─────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("Evaluating...")
     print("=" * 70)
@@ -330,15 +490,15 @@ def main():
             if not gt:
                 continue
 
-            # Combined
+            # Combined fusion model
             combined_pred = transcribe_combined(
                 acoustic_enc, semantic_enc, fusion, ctc_head, feat_extractor, audio_np, idx_to_char)
 
-            # Acoustic only
+            # Acoustic-only model
             acoustic_pred = transcribe_acoustic_only(
                 acoustic_only_enc, acoustic_only_ctc, feat_extractor, audio_np, idx_to_char)
 
-            # Baseline
+            # Baseline Whisper
             baseline_pred = ""
             if baseline_model is not None:
                 baseline_pred = normalize_text(transcribe_baseline(
@@ -364,7 +524,7 @@ def main():
             print(f"\n  ERROR: {clip.get('audio_path', '?')}: {e}")
             continue
 
-    # Compute WERs
+    # ── Compute and print WERs ───────────────────────────────────────────
     print("\n" + "=" * 70)
     print("RESULTS")
     print("=" * 70)
@@ -387,20 +547,20 @@ def main():
     for model_name, preds_key in [("Baseline Whisper", "baseline"), ("Acoustic Only", "acoustic"), ("Combined (Fusion)", "combined")]:
         if model_name == "Baseline Whisper" and baseline_model is None:
             continue
-        all_preds = [r[preds_key.split()[0] if " " in preds_key else preds_key] for r in results]
+        all_preds = [r[preds_key] for r in results]
         wer = compute_corpus_wer(all_refs, all_preds) * 100
         print(f"  {model_name:<25} {wer:>9.2f}%", end="")
         for lang in sorted(lang_results.keys()):
             lr = lang_results[lang]
-            lang_wer = compute_corpus_wer(lr["refs"], lr[preds_key.split()[0] if " " in preds_key else preds_key]) * 100
+            lang_wer = compute_corpus_wer(lr["refs"], lr[preds_key]) * 100
             print(f" {lang_wer:>9.2f}%", end="")
         print()
 
-    # Save results
+    # ── Save results ─────────────────────────────────────────────────────
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     n_clips = len(results)
 
-    # CSV
+    # CSV with per-clip predictions
     csv_path = OUTPUT_DIR / f"combined_eval_{args.eval_set}_{n_clips}clips.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["clip", "language", "ground_truth", "baseline", "acoustic", "combined"])
@@ -408,7 +568,7 @@ def main():
         writer.writerows(results)
     print(f"\n  CSV: {csv_path}")
 
-    # Summary
+    # Summary text file
     txt_path = OUTPUT_DIR / f"combined_eval_{args.eval_set}_{n_clips}clips.txt"
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(f"Combined Branch Evaluation — {args.eval_set} set ({n_clips} clips)\n")

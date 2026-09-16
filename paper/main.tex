@@ -1,0 +1,289 @@
+
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2026_conference,times}
+
+\input{math_commands.tex}
+
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{multirow}
+
+\title{Dual-Encoder Gated Fusion for Children's Automatic Speech \\ Recognition in Indian Languages}
+
+% Authors hidden for review
+\author{Anonymous}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+%\iclrfinalcopy % Uncomment for camera-ready version
+
+\begin{document}
+
+\maketitle
+
+% ===================================================================
+% ABSTRACT
+% ===================================================================
+\begin{abstract}
+Automatic speech recognition (ASR) for Indian children's speech remains challenging due to high pitch variation, differences in pronunciation, speaking rate, and frequent repetitions or disfluencies, along with the linguistic diversity of Indian languages. Most existing systems focus either on children's speech or Indian multilingual speech, but rarely both together. To the best of our knowledge, this is the first work to study ASR on the ASER dataset for Indian children's speech, covering Hindi, Marathi, and English. We propose a dual-encoder knowledge distillation framework in which one encoder learns linguistic representations from IndicConformer, trained on more than 17,000 hours of Indian-language speech, while the other learns acoustic representations from Kid-Whisper, specialized for children's speech. Both teachers are used to train Whisper Small student encoders through MSE-based knowledge distillation followed by CTC fine-tuning. A learnable gated fusion module then combines the representations from both student encoders at each frame and feature dimension, allowing them to learn from both sources together. On ASER, our fused model achieves 17.19\% WER, improving over the best individual encoder (19.96\%) by 2.77 percentage points and substantially reducing WER compared with vanilla Whisper Small (126.83\%).
+\end{abstract}
+
+% ===================================================================
+% 1. INTRODUCTION
+% ===================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Speech recognition systems have become highly effective for adult speech~\citep{radford2023whisper}, but recognizing children's speech remains challenging. This becomes even more difficult for Indian languages because of their linguistic diversity. Yet children's speech and Indian multilingual speech have largely been studied in isolation. This work focuses on the combined problem of recognizing Indian children's speech.
+
+Indian children's speech is challenging mainly for two reasons. First, children's speech exhibits large variations in pitch, pronunciation, and speaking rate, along with repetitions and other disfluencies~\citep{lee1999acoustics}. Second, Indian languages introduce additional difficulty through their diverse phoneme inventories and multilingual nature. Compounding both challenges, children-specific speech resources for Indian languages remain extremely limited, making it difficult to develop and evaluate ASR systems for this setting.
+
+Several approaches have been proposed to address children's speech and Indian multilingual speech separately. For children's speech, Kid-Whisper~\citep{attia2024kidwhisper} fine-tunes Whisper on the MyST dataset and achieves strong performance on English children's speech, but it is limited to English and does not address Indian languages such as Hindi and Marathi. Similarly, other approaches for children's speech~\citep{jain2023,liu2024} mainly focus on individual languages and do not consider the linguistic diversity of Indian languages. On the other hand, models such as IndicConformer~\citep{ai4bharat2024indicconformer}, IndicWhisper~\citep{bhogale2023indicwhisper}, and IndicVoices~\citep{javed2024indicvoices} focus on Indian languages, but are primarily developed using adult speech and do not specifically address the characteristics of children's speech. Therefore, existing approaches do not directly address both children's speech and Indian multilingual speech together. Although the ASER dataset~\citep{agarwal2019aser} provides Indian children's speech in multiple languages, to the best of our knowledge, no prior work has reported word error rate (WER) results for ASR on this dataset. Our work bridges this gap by combining knowledge from models specialized for children's speech and Indian-language speech.
+
+To address this gap, we propose a dual-encoder knowledge distillation~\citep{hinton2015distilling} framework that combines knowledge from two complementary teachers through separate training branches. In the acoustic branch, a Whisper Small encoder is trained to match the encoder hidden states of Kid-Whisper using frame-level MSE loss, allowing the student to learn representations specific to children's speech. In the semantic branch, another Whisper Small encoder is trained to match the CTC logits of IndicConformer using MSE loss at the output level, allowing the student to learn linguistic representations from Indian-language speech. Both student encoders are then fine-tuned using CTC loss~\citep{graves2006ctc}. Finally, a learnable gated fusion module~\citep{arevalo2017gated} combines the representations from both student encoders at each time frame and feature dimension, allowing the model to dynamically learn how much information to use from each branch. On the ASER dataset, covering Hindi, Marathi, and English, our fused model substantially outperforms vanilla Whisper Small and consistently improves over the best individual encoder across all three languages.
+
+\paragraph{Contributions.} Our main contributions are:
+\begin{itemize}
+    \item We present the first reported ASR evaluation on the ASER dataset for Indian children's speech, establishing baseline results across Hindi, Marathi, and English.
+    \item We propose a dual-encoder knowledge distillation framework that combines children's speech knowledge from Kid-Whisper with Indian-language knowledge from IndicConformer through two Whisper Small student encoders.
+    \item We introduce a learnable gated fusion module that dynamically combines the representations from the two student encoders at each time frame and feature dimension. Our fused model achieves 17.19\% WER, improving over the best single encoder (19.96\%) by 2.77 percentage points.
+\end{itemize}
+
+% ===================================================================
+% 2. RELATED WORK
+% ===================================================================
+% WHAT TO WRITE:
+% 2.1 Children's Speech Recognition (1 paragraph)
+%     - Acoustic challenges: pitch, formants, disfluency [Lee 1999, Potamianos 2003]
+%     - Kid-Whisper [Attia 2024], LoRA adapters [Jain 2023], S2-LoRA [Liu 2024]
+%     - Gap: all English-only, no Indian languages
+%
+% 2.2 ASR for Indian Languages (1 paragraph)
+%     - AI4Bharat ecosystem: IndicWav2Vec, IndicConformer, IndicWhisper, IndicVoices
+%     - Gap: all trained on adult speech, no children's adaptation
+%
+% 2.3 Knowledge Distillation for Speech (1 paragraph)
+%     - Hinton 2015 (foundational), Distil-Whisper [Gandhi 2023]
+%     - Single-teacher KD. Our contribution: dual-teacher KD
+%
+% 2.4 Multi-Encoder and Feature Fusion (1 paragraph)
+%     - CARE [Dutta 2025]: dual encoder for SER (semantic + acoustic), convex combination
+%     - GMU [Arevalo 2017]: sigmoid gating for multimodal fusion
+%     - Gap: no dual-encoder fusion for ASR, especially children + multilingual
+%
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Children's Speech Recognition}
+\textit{[To be written --- see comments above for guidance]}
+
+\subsection{ASR for Indian Languages}
+\textit{[To be written]}
+
+\subsection{Knowledge Distillation for Speech}
+\textit{[To be written]}
+
+\subsection{Multi-Encoder and Feature Fusion}
+\textit{[To be written]}
+
+% ===================================================================
+% 3. METHOD
+% ===================================================================
+% WHAT TO WRITE:
+% 3.1 Overview (1 paragraph + architecture figure)
+%     - High-level pipeline: two teachers -> two students -> gated fusion -> CTC
+%     - FIGURE 1: Full architecture diagram (both branches + fusion)
+%       Place here with \begin{figure}[t]
+%
+% 3.2 Teacher Models (1 paragraph)
+%     - Kid-Whisper: Whisper Medium, MyST dataset, 769M params, English children
+%     - IndicConformer: Conformer, 17K+ hours, 22 Indian languages, 600M params
+%     - Why these two complement each other
+%
+% 3.3 Knowledge Distillation (2 paragraphs)
+%     - Para 1: Acoustic branch — frame-level MSE on encoder hidden states
+%       Student: Whisper Small encoder -> projection Linear(768->1024)
+%       Teacher: Kid-Whisper encoder last_hidden_state (1024-dim)
+%       Loss: MSE(projected_student, teacher_features) on real frames only
+%     - Para 2: Semantic branch — logit-level MSE on CTC outputs
+%       Student: Whisper Small encoder -> CTC Head 2 Linear(768->257)
+%       Teacher: IndicConformer CTC logits (257-dim per language, pre-computed)
+%       Temporal interpolation: teacher 12.5fps -> student 50fps
+%       Loss: MSE(student_logits, interpolated_teacher_logits)
+%     - Equations for both MSE losses
+%
+% 3.4 CTC Fine-tuning (1 paragraph)
+%     - Sequential: freeze encoder, train CTC Head 1 Linear(768->85) from scratch
+%     - Joint: unfreeze encoder, MSE + CTC combined loss with alpha scheduling
+%     - Vocab: 85 tokens (3 special + 22 English + 60 Devanagari)
+%     - TABLE 1: Training pipeline stages table (optional)
+%
+% 3.5 Gated Fusion Module (1 paragraph + equation)
+%     - Gate equation: gate = sigma(W * [feat_a; feat_s] + b)
+%     - Fused = gate * feat_a + (1-gate) * feat_s
+%     - LayerNorm + Dropout on fused output
+%     - Both encoders frozen (default) or unfrozen with differential LR
+%     - Trainable params: ~1.25M (frozen) vs ~89M (unfrozen)
+%     - FIGURE 2: Gated fusion detail diagram (optional)
+%
+\section{Method}
+\label{sec:method}
+
+\subsection{Overview}
+\textit{[To be written --- include FIGURE 1: architecture diagram here]}
+
+\subsection{Teacher Models}
+\textit{[To be written]}
+
+\subsection{Knowledge Distillation}
+\textit{[To be written --- include MSE loss equations]}
+
+\subsection{CTC Fine-tuning}
+\textit{[To be written]}
+
+\subsection{Gated Fusion Module}
+\textit{[To be written --- include gate equation]}
+
+% ===================================================================
+% 4. EXPERIMENTS
+% ===================================================================
+\section{Experiments}
+\label{sec:experiments}
+
+% WHAT TO WRITE:
+% 4.1 Dataset: ASER (1 paragraph + TABLE 2)
+%     - ASER: Annual Status of Education Report, reading assessment
+%     - Children reading words/paragraphs in Hindi, Marathi, English
+%     - TABLE 2: Dataset split statistics:
+%       | Split   | Hindi | Marathi | English | Total  |
+%       |---------|-------|---------|---------|--------|
+%       | Train   | 5,855 | 3,710   | 4,200   | 13,765 |
+%       | Dev     | 732   | 464     | 525     | 1,721  |
+%       | Test    | ~570  | ~540    | ~585    | 1,695  |
+%     - Preprocessing: audio resampled to 16kHz, text normalized
+%     - Note: first ASR WER evaluation on this dataset (prior work only classification)
+%
+% 4.2 Implementation Details (1-2 paragraphs)
+%     - Hardware: NVIDIA Tesla V100 32GB
+%     - Framework: PyTorch + HuggingFace Transformers
+%     - Student architecture: Whisper Small encoder (244M params, 768-dim)
+%     - Acoustic branch KD: MSE on hidden states, projection 768->1024, LR=1e-4
+%     - Semantic branch KD: MSE on CTC logits, 768->257, temporal interpolation
+%     - CTC fine-tuning: vocab=85 tokens (3 special + 22 English + 60 Devanagari)
+%     - Sequential: freeze encoder, train CTC head, LR=5e-4, 30 epochs
+%     - Joint: unfreeze encoder, encoder LR=1e-5, CTC head LR=5e-4
+%     - Fusion training: frozen encoders, gate+CTC LR=1e-3, 20 epochs
+%     - Unfrozen fusion: differential LR (encoder 1e-5, fusion 1e-3), 30 epochs
+%     - SpecAugment: 2 freq masks (width<=27), 2 time masks (width<=100)
+%     - Dropout: 0.1, gradient clipping: 1.0
+%     - Optimizer: AdamW, weight decay=0.01
+%
+% 4.3 Main Results (1 paragraph discussion + TABLE 1 already placed above)
+%     - Discuss Table 1 results in 3 parts:
+%       (a) Zero-shot baselines fail badly — why each one fails
+%       (b) Single-encoder KD results — acoustic >> semantic, explain why
+%       (c) Gated fusion improves all 3 languages consistently
+%     - Emphasize: 126.83% -> 19.96% -> 18.92% (or better with unfrozen)
+%
+\subsection{Dataset: ASER}
+\textit{[To be written]}
+
+\subsection{Implementation Details}
+\textit{[To be written]}
+
+\subsection{Main Results}
+
+\begin{table}[t]
+\caption{Word Error Rate (\%) on the ASER test set (1,695 clips). Lower is better. Our dual-encoder gated fusion model improves over the best single encoder across all three languages.}
+\label{tab:main_results}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Hindi} & \textbf{Marathi} & \textbf{English} & \textbf{Overall} \\
+\midrule
+\multicolumn{5}{l}{\textit{Off-the-shelf baselines (no fine-tuning)}} \\
+Whisper Small (244M) & 161.81 & 170.78 & 47.42 & 126.83 \\
+Kid-Whisper Medium (769M) & 454.66 & 656.45 & 37.35 & 363.56 \\
+IndicConformer (600M) & 39.01 & 44.61 & -- & 59.90 \\
+\midrule
+\multicolumn{5}{l}{\textit{Single-encoder distillation (Whisper Small, 244M)}} \\
+Acoustic encoder (KD from Kid-Whisper) & 17.83 & 26.11 & 17.33 & 19.96 \\
+Semantic encoder (KD from IndicConformer) & 39.72 & 68.11 & -- & 47.86 \\
+\midrule
+\multicolumn{5}{l}{\textit{Dual-encoder fusion (ours)}} \\
+\textbf{Gated Fusion} & \textbf{16.85} & \textbf{25.01} & \textbf{16.06} & \textbf{18.92} \\
+\quad \textit{Improvement vs.\ acoustic} & \textit{--0.98} & \textit{--1.10} & \textit{--1.27} & \textit{--1.04} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\textit{[Discussion to be written]}
+
+% ===================================================================
+% 5. ANALYSIS
+% ===================================================================
+\section{Analysis}
+\label{sec:analysis}
+
+% WHAT TO WRITE:
+% 5.1 Gate Value Analysis (1 paragraph + FIGURE 3)
+%     - Average gate values across test set: how much does the gate favor
+%       acoustic vs semantic encoder?
+%     - Per-language gate distribution: does Hindi/Marathi lean more toward
+%       semantic (IndicConformer knowledge) vs English toward acoustic (Kid-Whisper)?
+%     - FIGURE 3: Histogram or heatmap of gate values per language
+%
+% 5.2 Per-Clip Improvement Analysis (1 paragraph)
+%     - How many clips improved vs degraded vs unchanged after fusion?
+%     - Characterize clips that improved most (language, length, difficulty)
+%     - Characterize clips that degraded (potential interference cases)
+%
+% 5.3 Ablation: Frozen vs Unfrozen Encoders (1 paragraph + TABLE 3)
+%     - TABLE 3: Frozen fusion (18.92%) vs Unfrozen fusion (TBD) vs single encoders
+%     - Discuss: does co-adaptation help? How much?
+%     - Training stability with differential LR
+%
+% 5.4 Error Analysis (1 paragraph)
+%     - Common error patterns: substitution vs insertion vs deletion
+%     - Language-specific errors (e.g., Devanagari confusions)
+%     - Examples of corrected errors from fusion vs single encoder
+%
+\textit{[To be written --- gate value analysis, per-clip improvement/degradation counts, error analysis]}
+
+% ===================================================================
+% 6. CONCLUSION
+% ===================================================================
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+We presented a dual-encoder gated fusion approach for automatic speech recognition of Indian children's speech, combining knowledge distilled from two complementary teacher models: Kid-Whisper (children's speech specialist) and IndicConformer (Indian language specialist). Our gated fusion mechanism learns to dynamically weight each encoder's contribution per frame and per feature dimension, achieving 18.92\% WER on the ASER test set compared to 19.96\% for the best single encoder---a consistent improvement across all three languages (Hindi, Marathi, English).
+
+While the 1.04\% absolute improvement demonstrates that complementary teacher knowledge can be effectively combined, the modest gain suggests that both encoders, sharing the same Whisper Small architecture and processing identical mel spectrogram inputs, learn partially redundant representations. We identify two promising directions for future work:
+
+\paragraph{Encoder co-adaptation.} Unfreezing both encoders during fusion training with differential learning rates (encoder LR $= 10^{-5}$, fusion LR $= 10^{-3}$) would allow them to co-adapt and learn complementary features, as the CTC gradients flowing through the fusion gate would encourage specialization.
+
+\paragraph{Cross-modal distillation.} Replacing the speech-based IndicConformer teacher with a text-based language model such as MuRIL~\citep{khanuja2021muril} for the semantic branch would force the semantic encoder to capture genuinely different (linguistic/semantic) features rather than redundant acoustic features. This cross-modal distillation approach~\citep{bapna2022slam, ao2022speecht5} has shown promise in bridging the speech-text representation gap.
+
+% ===================================================================
+% REFERENCES
+% ===================================================================
+\bibliography{references}
+\bibliographystyle{iclr2026_conference}
+
+\appendix
+\section{Training Details}
+\label{app:training}
+
+\textit{[To be written --- hyperparameters, hardware, training curves]}
+
+\section{Additional Results}
+\label{app:results}
+
+\textit{[To be written --- per-clip analysis, sample predictions]}
+
+\end{document}

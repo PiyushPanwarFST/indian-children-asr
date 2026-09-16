@@ -1,43 +1,144 @@
 """
-Combined Branch — Dual-Encoder Feature Fusion Training
-=======================================================
+Combined Branch — Dual-Encoder Gated Fusion Training (Unfrozen Encoders)
+========================================================================
 
 WHAT THIS SCRIPT DOES:
-    Fuses features from TWO Whisper Small encoders:
-      1. Acoustic encoder (trained with Kid-Whisper MSE + CTC, 19.97% WER)
-      2. Semantic encoder (trained with IndicConformer MSE, 49.02% WER)
+    Trains a gated fusion model that combines TWO Whisper Small encoders:
+      1. Acoustic encoder  — distilled from Kid-Whisper (children's speech expert)
+      2. Semantic encoder   — distilled from IndicConformer (Indian language expert)
 
-    A trainable GatedFusion module learns per-frame weighting between the two
-    encoders, and a warm-started CTC head decodes the fused features.
+    Both encoders are UNFROZEN and fine-tuned with a small learning rate (1e-5),
+    while the fusion module and CTC head use a larger learning rate (1e-3).
+    This differential LR lets encoders co-adapt to produce complementary features
+    without destroying their pre-trained representations.
 
-    TWO MODES:
-      1. Frozen (default): Both encoders FROZEN — only fusion + CTC head train.
-         Total trainable: ~1.25M params. Fast, stable.
-      2. Unfrozen (--unfreeze_encoders): Both encoders fine-tuned with a SMALL LR
-         (--encoder_lr, default 1e-5) while fusion + CTC head use normal LR (1e-3).
-         Total trainable: ~89M params. Lets encoders co-adapt for complementary features.
-         Uses gradient checkpointing to fit in GPU memory.
+WHY THIS WORKS:
+    The acoustic encoder captures children's voice patterns (pitch, rate, disfluency).
+    The semantic encoder captures Indian language phonetics (Hindi, Marathi phonemes).
+    Neither alone has both. The gated fusion learns per-frame, per-dimension weighting
+    to combine them optimally. Unfreezing allows the encoders to specialize further —
+    each encoder learns to focus on what the other cannot provide.
 
-WHY THIS SHOULD WORK:
-    The acoustic encoder captures children's voice patterns (Kid-Whisper).
-    The semantic encoder captures Indian language phonetics (IndicConformer).
-    Neither alone has both. Gated fusion learns which encoder to trust per frame.
+DETAILED ARCHITECTURE:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │                                                                      │
+    │  INPUT:                                                              │
+    │    Raw audio (.mp3/.wav) → resample to 16kHz mono                    │
+    │    → WhisperFeatureExtractor → 80-bin log-Mel spectrogram (1,80,3000)│
+    │    → SpecAugment: 2 freq masks (width≤15), 2 time masks (width≤50)  │
+    │                                                                      │
+    │  DUAL ENCODERS (both unfrozen, lr=1e-5):                             │
+    │    Acoustic Encoder (Whisper Small, 12 layers, 768-dim):             │
+    │      - Initialized from: Kid-Whisper KD + CTC joint training         │
+    │      - Checkpoint: checkpoints/joint/joint_best_wer.pt               │
+    │      - Input: mel (1, 80, 3000) → Output: feat_a (1, T, 768)        │
+    │                                                                      │
+    │    Semantic Encoder (Whisper Small, 12 layers, 768-dim):             │
+    │      - Initialized from: IndicConformer MSE distillation             │
+    │      - Checkpoint: checkpoints/semantic_mse/best_dev.pt              │
+    │      - Input: mel (1, 80, 3000) → Output: feat_s (1, T, 768)        │
+    │                                                                      │
+    │    Both encoders process the SAME augmented mel spectrogram.          │
+    │    T = real_frames = min(num_samples // 160 // 2, 1500)              │
+    │    Padding frames beyond actual audio length are trimmed off.         │
+    │                                                                      │
+    │  GATED FUSION MODULE (lr=1e-3, ~1.18M params):                       │
+    │    Step 1: Concatenate features                                      │
+    │      concat = [feat_a; feat_s]              → (1, T, 1536)           │
+    │    Step 2: Compute sigmoid gate                                      │
+    │      gate = σ(W_g · concat + b_g)           → (1, T, 768)            │
+    │      W_g: Linear(1536→768), b_g: bias(768)                           │
+    │      gate values ∈ [0,1] per frame per dimension                     │
+    │      gate≈1 → trust acoustic, gate≈0 → trust semantic               │
+    │    Step 3: Weighted combination                                      │
+    │      fused = gate ⊙ feat_a + (1-gate) ⊙ feat_s  → (1, T, 768)      │
+    │    Step 4: Normalize and regularize                                  │
+    │      fused = LayerNorm(fused)                                        │
+    │      fused = Dropout(fused, p=0.1)                                   │
+    │                                                                      │
+    │  CTC HEAD (lr=1e-3, ~65K params):                                    │
+    │    logits = Linear(768→85)(fused)            → (1, T, 85)            │
+    │    Warm-started from acoustic branch CTC head.                       │
+    │    85 = 3 special (<blank>, <space>, <unk>) + 22 English + 60 Devanag│
+    │                                                                      │
+    │  LOSS AND OPTIMIZATION:                                              │
+    │    CTC Loss (blank=0, zero_infinity=True)                            │
+    │    Target: character indices from ground truth text                   │
+    │    Optimizer: AdamW with differential LR:                            │
+    │      - Encoder params: lr=1e-5 (small, preserve pre-trained features)│
+    │      - Fusion + CTC params: lr=1e-3 (large, learn fast)             │
+    │    Scheduler: linear warmup (500 steps) → cosine decay to zero       │
+    │    Gradient clipping: max_norm=1.0                                   │
+    │                                                                      │
+    │  GRADIENT FLOW (backward pass):                                      │
+    │    CTC Loss                                                          │
+    │      ↓                                                               │
+    │    CTC Head (lr=1e-3)                                                │
+    │      ↓                                                               │
+    │    GatedFusion gate + LayerNorm (lr=1e-3)                            │
+    │      ↓ splits via gate weighting                                     │
+    │      ├→ Acoustic Encoder all 12 layers (lr=1e-5)                     │
+    │      └→ Semantic Encoder all 12 layers (lr=1e-5)                     │
+    │    Gradients encourage encoders to SPECIALIZE:                       │
+    │    the fusion gate tells each encoder what features are missing.     │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘
 
-ARCHITECTURE:
-    ┌───────────────────────────────────────────────────────────────┐
-    │  Audio → Mel → SpecAugment (shared)                          │
-    │       ├→ Acoustic Encoder (frozen/unfrozen) → feat_a (T,768) │
-    │       └→ Semantic Encoder (frozen/unfrozen) → feat_s (T,768) │
-    │            ↓ concat → (T, 1536)                              │
-    │       GatedFusion (TRAINABLE):                               │
-    │         gate = σ(Linear(1536→768))                           │
-    │         fused = gate * feat_a + (1-gate) * feat_s            │
-    │         → LayerNorm → Dropout                                │
-    │            ↓                                                 │
-    │       CTC Head: Linear(768→85) — warm from acoustic          │
-    │            ↓                                                 │
-    │       CTC Loss ← ground truth text                           │
-    └───────────────────────────────────────────────────────────────┘
+PSEUDOCODE:
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │ STEP 1: Load vocabulary (85 characters from vocab.json)             │
+    │                                                                      │
+    │ STEP 2: Load training data from asr_train.csv (~13,765 clips)       │
+    │         Load dev data from asr_dev.csv (~1,775 clips)               │
+    │         Optionally limit clips with --test_clips N                   │
+    │                                                                      │
+    │ STEP 3: Load models                                                  │
+    │   3a. Load Whisper Small encoder → restore acoustic weights          │
+    │       from joint_best_wer.pt → set .train() mode                     │
+    │   3b. Load Whisper Small encoder → restore semantic weights           │
+    │       from best_dev.pt → set .train() mode                           │
+    │   3c. Create GatedFusion(dim=768, dropout=0.1) → random init         │
+    │   3d. Create CTC Head Linear(768→85) → warm-start from acoustic ckpt │
+    │   3e. If --resume: load ALL weights from combined checkpoint          │
+    │       (fusion + CTC + both encoders + optimizer + scheduler)          │
+    │                                                                      │
+    │ STEP 4: Define helper functions                                      │
+    │   load_audio(path) → 16kHz mono tensor                               │
+    │   compute_real_frames(samples) → encoder output length               │
+    │   apply_spec_augment(mel) → augmented mel spectrogram                │
+    │                                                                      │
+    │ STEP 5: Verify forward + backward pass on 1 clip                     │
+    │   Check: mel shape, encoder outputs, fusion output, CTC loss,        │
+    │   gradients flow to ALL components (encoders, fusion, CTC head)      │
+    │                                                                      │
+    │ STEP 6: Setup optimizer and scheduler                                │
+    │   AdamW with 2 param groups:                                         │
+    │     Group 1: encoder params → lr=1e-5                                │
+    │     Group 2: fusion + CTC params → lr=1e-3                           │
+    │   LR schedule: warmup 500 steps → cosine decay                       │
+    │                                                                      │
+    │ STEP 7: Training loop                                                │
+    │   FOR each epoch (1 to 30):                                          │
+    │     Shuffle training clips                                           │
+    │     FOR each clip:                                                   │
+    │       1. Load audio → 16kHz mono waveform                            │
+    │       2. Compute mel spectrogram → apply SpecAugment                 │
+    │       3. Forward through BOTH encoders (with gradients)              │
+    │       4. Trim to real frames (remove padding)                        │
+    │       5. Gated fusion: gate = σ(W·[a;s]+b), fused = gate·a+(1-g)·s  │
+    │       6. CTC head: logits = Linear(fused)                            │
+    │       7. CTC loss on log_softmax(logits) vs target character indices │
+    │       8. Backward pass → clip gradients → optimizer step → scheduler │
+    │     END FOR                                                          │
+    │     Evaluate on dev set → per-language WER                           │
+    │     Save checkpoint (fusion + CTC + encoders + optimizer + scheduler)│
+    │     If dev WER improved → save best_wer.pt                           │
+    │     If no improvement for 10 epochs → EARLY STOP                     │
+    │   END FOR                                                            │
+    │                                                                      │
+    │ STEP 8: Print final epoch-by-epoch results table                     │
+    │         Compare with individual encoder baselines                    │
+    └──────────────────────────────────────────────────────────────────────┘
 
 WARM START:
     Acoustic encoder: checkpoints/joint/joint_best_wer.pt → encoder_state_dict
@@ -46,8 +147,8 @@ WARM START:
                       (warm from acoustic branch — already knows char→CTC mapping)
 
 Prerequisites:
-    - Acoustic checkpoint: checkpoints/joint/joint_best_wer.pt (from acoustic branch joint training)
-    - Semantic checkpoint: checkpoints/semantic_mse/best_dev.pt (from semantic branch MSE distillation)
+    - Acoustic checkpoint: checkpoints/joint/joint_best_wer.pt
+    - Semantic checkpoint: checkpoints/semantic_mse/best_dev.pt
     - Vocabulary: ASER-Dataset/vocab.json (85 tokens)
     - Splits: ASER-Dataset/splits/asr_train.csv, asr_dev.csv
 
@@ -55,11 +156,11 @@ Usage:
     # Test run (3000 clips, 10 epochs)
     python step1_combined_training.py --test_clips 3000 --epochs 10
 
-    # Full training
-    python step1_combined_training.py --epochs 30 --patience 7
+    # Full training (all clips, 30 epochs)
+    python step1_combined_training.py --epochs 30 --patience 10
 
     # Resume from checkpoint
-    python step1_combined_training.py --resume checkpoints/combined/epoch_5.pt --epochs 30
+    python step1_combined_training.py --resume checkpoints/combined_unfrozen/epoch_5.pt --epochs 30
 """
 
 import argparse
@@ -78,55 +179,69 @@ import torch.nn.functional as F
 from pathlib import Path
 from tqdm import tqdm
 
-# ── Args ──────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Combined branch: dual-encoder fusion training")
+# ══════════════════════════════════════════════════════════════════════════════
+# ARGUMENT PARSING
+# ══════════════════════════════════════════════════════════════════════════════
+
+parser = argparse.ArgumentParser(description="Combined branch: dual-encoder gated fusion training")
 parser.add_argument("--verify", action="store_true",
-                    help="Quick verify (skips checkpoint saving)")
+                    help="Quick sanity check with 100 clips, no checkpointing")
 parser.add_argument("--test_clips", type=int, default=None,
-                    help="Limit training clips")
-parser.add_argument("--epochs", type=int, default=30)
+                    help="Limit number of training clips (for test runs)")
+parser.add_argument("--epochs", type=int, default=30,
+                    help="Number of training epochs")
 parser.add_argument("--lr", type=float, default=1e-3,
-                    help="Learning rate (higher OK — only ~1.25M trainable params)")
-parser.add_argument("--warmup_steps", type=int, default=200)
-parser.add_argument("--max_audio_sec", type=float, default=30.0)
-parser.add_argument("--patience", type=int, default=7,
-                    help="Early stopping patience on dev WER (0=disabled)")
-parser.add_argument("--dropout", type=float, default=0.1)
+                    help="Learning rate for fusion module + CTC head")
+parser.add_argument("--encoder_lr", type=float, default=1e-5,
+                    help="Learning rate for encoder params (100x smaller than fusion LR)")
+parser.add_argument("--warmup_steps", type=int, default=500,
+                    help="Linear warmup steps before cosine decay")
+parser.add_argument("--max_audio_sec", type=float, default=30.0,
+                    help="Max audio length in seconds (longer clips are truncated)")
+parser.add_argument("--patience", type=int, default=10,
+                    help="Early stopping patience on dev WER (0 = disabled)")
+parser.add_argument("--dropout", type=float, default=0.1,
+                    help="Dropout rate in fusion module")
 parser.add_argument("--acoustic_ckpt", type=str,
                     default="checkpoints/joint/joint_best_wer.pt",
-                    help="Acoustic encoder checkpoint (joint training result)")
+                    help="Path to acoustic encoder checkpoint (from Kid-Whisper KD + CTC)")
 parser.add_argument("--semantic_ckpt", type=str,
                     default="checkpoints/semantic_mse/best_dev.pt",
-                    help="Semantic encoder checkpoint (MSE distillation result)")
+                    help="Path to semantic encoder checkpoint (from IndicConformer KD)")
 parser.add_argument("--ctc_ckpt", type=str, default=None,
-                    help="CTC head warm-start (default: from acoustic checkpoint)")
+                    help="Optional separate CTC head checkpoint (default: from acoustic_ckpt)")
 parser.add_argument("--resume", type=str, default=None,
-                    help="Resume from combined training checkpoint")
-parser.add_argument("--unfreeze_encoders", action="store_true",
-                    help="Fine-tune both encoders with small LR (default: frozen)")
-parser.add_argument("--encoder_lr", type=float, default=1e-5,
-                    help="LR for encoder params when unfrozen (default: 1e-5, 100x smaller than fusion LR)")
+                    help="Resume training from a combined checkpoint (e.g. epoch_5.pt)")
 parser.add_argument("--grad_checkpoint", action="store_true",
-                    help="Gradient checkpointing to save GPU memory (needed when unfreezing)")
-parser.add_argument("--seed", type=int, default=42)
-parser.add_argument("--log_every", type=int, default=10)
+                    help="Enable gradient checkpointing to reduce GPU memory usage")
+parser.add_argument("--seed", type=int, default=42,
+                    help="Random seed for reproducibility")
+parser.add_argument("--log_every", type=int, default=10,
+                    help="Log frequency (every N steps)")
 args = parser.parse_args()
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# PATHS AND CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Project root: 4 levels up from this script
+# this file → 01_feature_fusion/ → combined_branch/ → experiments/ → project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
 ASER_ROOT    = PROJECT_ROOT / "ASER-Dataset"
 TRAIN_CSV    = ASER_ROOT / "splits" / "asr_train.csv"
 DEV_CSV      = ASER_ROOT / "splits" / "asr_dev.csv"
 VOCAB_PATH   = ASER_ROOT / "vocab.json"
-CKPT_SUBDIR  = "combined_unfrozen" if "--unfreeze_encoders" in sys.argv else "combined"
-CKPT_DIR     = PROJECT_ROOT / "checkpoints" / CKPT_SUBDIR
+
+# Checkpoints saved to combined_unfrozen/ directory
+CKPT_DIR = PROJECT_ROOT / "checkpoints" / "combined_unfrozen"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 LANG_MAP = {"Hindi": "hi", "Marathi": "mr", "English": "en"}
 
-# ── Add project root for utils import ────────────────────────────────────────
+# Add project root to path so we can import utils
 sys.path.insert(0, str(PROJECT_ROOT))
 from scripts.utils.wer import normalize_text, compute_corpus_wer
 
@@ -137,7 +252,7 @@ if DEVICE == "cuda":
     print(f"GPU: {gpu_name} ({gpu_mem:.1f} GB)")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 1: Load vocabulary
+# STEP 1: Load character vocabulary (85 tokens)
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 70)
 print("STEP 1: Loading character vocabulary")
@@ -147,15 +262,27 @@ with open(VOCAB_PATH, "r", encoding="utf-8") as f:
     char_to_idx = json.load(f)
 
 idx_to_char = {v: k for k, v in char_to_idx.items()}
-vocab_size = len(char_to_idx)
-BLANK_IDX = char_to_idx["<blank>"]  # 0
+vocab_size = len(char_to_idx)  # 85 tokens: 3 special + 22 English + 60 Devanagari
+BLANK_IDX = char_to_idx["<blank>"]  # 0 — CTC blank token
 
 print(f"  Vocab: {vocab_size} tokens (from {VOCAB_PATH.name})")
 print(f"  Blank index: {BLANK_IDX}")
 
 
 def text_to_indices(text, char_to_idx):
-    """Convert normalized text to vocabulary indices for CTC targets."""
+    """
+    Convert normalized text string to a list of vocabulary indices for CTC targets.
+
+    Each character is mapped to its index in the vocabulary. Spaces are mapped
+    to the <space> token. Unknown characters are mapped to <unk>.
+
+    Args:
+        text (str): Normalized ground truth text (e.g., "राधा के पास")
+        char_to_idx (dict): Character-to-index mapping from vocab.json
+
+    Returns:
+        list[int]: List of token indices, e.g., [25, 42, 1, 30, ...]
+    """
     indices = []
     for ch in text:
         if ch == " ":
@@ -168,9 +295,21 @@ def text_to_indices(text, char_to_idx):
 
 
 def ctc_greedy_decode(logits, idx_to_char):
-    """Greedy CTC decode from logits (T, vocab_size)."""
-    indices = torch.argmax(logits, dim=-1)  # (T,)
-    collapsed = torch.unique_consecutive(indices)
+    """
+    Perform greedy CTC decoding from model logits.
+
+    Takes the argmax at each time step, collapses consecutive repeated tokens,
+    and removes blank tokens to produce the final decoded string.
+
+    Args:
+        logits (Tensor): Shape (T, vocab_size) — raw logits from CTC head
+        idx_to_char (dict): Index-to-character mapping (reverse of vocab)
+
+    Returns:
+        str: Decoded text string (e.g., "राधा के पास")
+    """
+    indices = torch.argmax(logits, dim=-1)  # (T,) — best token at each frame
+    collapsed = torch.unique_consecutive(indices)  # Remove repeated tokens
     chars = []
     for idx in collapsed:
         idx = idx.item()
@@ -187,7 +326,7 @@ def ctc_greedy_decode(logits, idx_to_char):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 2: Load training data (all 3 languages)
+# STEP 2: Load training and dev data (Hindi, Marathi, English)
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 70)
 print("STEP 2: Loading training data (all languages)")
@@ -196,18 +335,20 @@ print("=" * 70)
 
 def load_clips_from_csv(csv_path, max_clips=None):
     """
-    Load all clips from CSV — all 3 languages, no teacher logits needed.
+    Load audio clip metadata from a CSV split file.
 
-    Unlike semantic branch (which needs teacher logits), this loads raw audio paths
-    and ground truth text only. Used for both train and dev sets.
+    Reads asr_train.csv or asr_dev.csv and returns a list of clip dictionaries.
+    Each clip has audio path, language, ground truth transcript, and duration.
 
     Args:
-        csv_path: Path to asr_train.csv or asr_dev.csv
-        max_clips: Optional limit on number of clips to load
+        csv_path (str or Path): Path to the CSV file (asr_train.csv or asr_dev.csv)
+        max_clips (int, optional): If set, only return the first N clips
 
     Returns:
-        (clips, skipped) where clips is a list of dicts with keys:
-        audio_path, language, lang_code, clip_name, duration_sec, ground_truth
+        tuple: (clips, skipped) where:
+            - clips (list[dict]): List of clip dicts with keys:
+                audio_path, language, lang_code, clip_name, duration_sec, ground_truth
+            - skipped (int): Number of clips skipped due to unknown language
     """
     clips = []
     skipped = 0
@@ -224,9 +365,12 @@ def load_clips_from_csv(csv_path, max_clips=None):
             if not os.path.isabs(audio_path):
                 audio_path = str(ASER_ROOT / audio_path)
 
+            # Create unique clip ID from child_id + filename
             child_id = row.get("child_id", "")
             basename = os.path.splitext(os.path.basename(audio_path))[0]
             clip_uid = f"{child_id}_{basename}" if child_id else basename
+
+            # Ground truth text (try multiple column names for compatibility)
             gt = row.get("transcript", row.get("que_text", row.get("text", "")))
 
             clips.append({
@@ -244,6 +388,7 @@ def load_clips_from_csv(csv_path, max_clips=None):
     return clips, skipped
 
 
+# Load training set
 train_clips, skip_other = load_clips_from_csv(TRAIN_CSV)
 hi_clips = [c for c in train_clips if c["lang_code"] == "hi"]
 mr_clips = [c for c in train_clips if c["lang_code"] == "mr"]
@@ -260,11 +405,11 @@ if len(train_clips) == 0:
     print("\n  ERROR: No training clips found!")
     exit(1)
 
-# Dev set
+# Load dev set
 dev_clips, _ = load_clips_from_csv(DEV_CSV)
 print(f"  Dev set: {len(dev_clips)} clips")
 
-# Clip limiting
+# ── Optionally limit clips for test runs ────────────────────────────────────
 N = args.test_clips
 if N is None and args.verify:
     N = 100
@@ -275,6 +420,8 @@ if N and N < len(train_clips):
     lang_clips = {"hi": hi_clips, "mr": mr_clips, "en": en_clips}
     sampled = []
     remaining = N
+
+    # Proportional sampling: maintain language ratio from full dataset
     for lc, lclips in lang_clips.items():
         n_lang = min(int(N * len(lclips) / total_all), len(lclips))
         if lclips:
@@ -283,6 +430,7 @@ if N and N < len(train_clips):
     if remaining > 0:
         leftover = [c for c in train_clips if c not in sampled]
         sampled.extend(random.sample(leftover, min(remaining, len(leftover))))
+
     train_clips = sampled
     random.shuffle(train_clips)
     hi_n = sum(1 for c in train_clips if c["lang_code"] == "hi")
@@ -300,7 +448,7 @@ if N and N < len(train_clips):
 print()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 3: Load models (two frozen encoders + trainable fusion)
+# STEP 3: Load models (two unfrozen encoders + trainable fusion + CTC head)
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
 print("STEP 3: Loading models")
@@ -311,34 +459,39 @@ from transformers import WhisperModel, WhisperFeatureExtractor
 
 WHISPER_ID = "openai/whisper-small"
 
-# ── Feature extractor ────────────────────────────────────────────────────────
+# Feature extractor: converts raw audio waveform → 80-bin log-Mel spectrogram
 feat_extractor = WhisperFeatureExtractor.from_pretrained(WHISPER_ID)
 
 
-def load_encoder(checkpoint_path, label, freeze=True):
+def load_encoder(checkpoint_path, label):
     """
-    Load a Whisper Small encoder from checkpoint, optionally frozen.
+    Load a Whisper Small encoder and restore trained weights from checkpoint.
+
+    Initializes a fresh Whisper Small model, extracts just the encoder, then
+    loads our distilled weights from a checkpoint file. The encoder is kept
+    trainable (unfrozen) with gradient checkpointing enabled if requested.
 
     Handles two checkpoint formats:
-      - encoder_state_dict (from joint/semantic training)
-      - model_state_dict with 'encoder.' prefix (from acoustic MSE training)
+      - 'encoder_state_dict': Direct encoder weights (from joint/semantic training)
+      - 'model_state_dict': Full model weights with 'encoder.' prefix (from MSE training)
 
     Args:
-        checkpoint_path: Relative path from PROJECT_ROOT to the .pt checkpoint
-        label: Display label for logging (e.g., "ACOUSTIC ENCODER")
-        freeze: If True, freeze all params. If False, keep trainable.
+        checkpoint_path (str): Relative path from PROJECT_ROOT to the .pt checkpoint
+        label (str): Display name for logging (e.g., "ACOUSTIC ENCODER")
 
     Returns:
-        Encoder module (frozen or trainable depending on freeze flag)
+        nn.Module: Whisper encoder with restored weights, in train mode, on DEVICE
     """
     print(f"\n  [{label}] Loading Whisper Small encoder...")
+
+    # Load a fresh Whisper Small model, extract just the encoder
     whisper_model = WhisperModel.from_pretrained(WHISPER_ID)
     encoder = whisper_model.encoder.to(DEVICE)
 
-    # Load trained weights
+    # Resolve checkpoint path
     ckpt_path = PROJECT_ROOT / checkpoint_path
     if not ckpt_path.exists():
-        # Try alternate path
+        # Try known alternate paths
         alt_paths = [
             PROJECT_ROOT / "checkpoints" / "semantic" / "best_dev_model.pt",
             PROJECT_ROOT / "checkpoints" / "joint" / "joint_best_wer.pt",
@@ -354,11 +507,12 @@ def load_encoder(checkpoint_path, label, freeze=True):
     print(f"    Loading from: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
 
-    # Handle different checkpoint key formats
+    # Load weights — handle different checkpoint key formats
     if "encoder_state_dict" in ckpt:
+        # Format from joint training / semantic training: keys are direct encoder params
         encoder.load_state_dict(ckpt["encoder_state_dict"])
     elif "model_state_dict" in ckpt:
-        # Acoustic MSE checkpoint uses model_state_dict with prefixed keys
+        # Format from acoustic MSE training: keys have 'encoder.' prefix, strip it
         state = {}
         for k, v in ckpt["model_state_dict"].items():
             if k.startswith("encoder."):
@@ -371,50 +525,78 @@ def load_encoder(checkpoint_path, label, freeze=True):
     epoch_info = ckpt.get("epoch", "?")
     print(f"    Loaded from epoch {epoch_info}")
 
-    n_params = sum(p.numel() for p in encoder.parameters())
-    if freeze:
-        for param in encoder.parameters():
-            param.requires_grad = False
-        encoder.eval()
-        print(f"    FROZEN ({n_params:,} params, requires_grad=False)")
-    else:
-        encoder.train()
-        if args.grad_checkpoint:
-            encoder.gradient_checkpointing_enable()
-            print(f"    Gradient checkpointing ENABLED")
-        print(f"    UNFROZEN ({n_params:,} params, requires_grad=True, lr={args.encoder_lr})")
+    # Set encoder to training mode (BatchNorm and Dropout active)
+    encoder.train()
 
-    # Clean up
+    # Enable gradient checkpointing if requested — trades compute for memory
+    # Instead of storing all intermediate activations, recomputes them during backward pass
+    # Reduces GPU memory by ~40% at the cost of ~20% slower training
+    if args.grad_checkpoint:
+        encoder.gradient_checkpointing_enable()
+        print(f"    Gradient checkpointing ENABLED")
+
+    n_params = sum(p.numel() for p in encoder.parameters())
+    print(f"    UNFROZEN ({n_params:,} params, requires_grad=True, lr={args.encoder_lr})")
+
+    # Clean up the full Whisper model (we only keep the encoder)
     del whisper_model, ckpt
     gc.collect()
 
     return encoder
 
 
-# ── Load both encoders ───────────────────────────────────────────────────────
-freeze_encoders = not args.unfreeze_encoders
-acoustic_encoder = load_encoder(args.acoustic_ckpt, "ACOUSTIC ENCODER", freeze=freeze_encoders)
-semantic_encoder = load_encoder(args.semantic_ckpt, "SEMANTIC ENCODER", freeze=freeze_encoders)
+# ── Load both encoders (both unfrozen, will be fine-tuned) ──────────────────
+acoustic_encoder = load_encoder(args.acoustic_ckpt, "ACOUSTIC ENCODER")
+semantic_encoder = load_encoder(args.semantic_ckpt, "SEMANTIC ENCODER")
 
 
-# ── Gated Fusion module ─────────────────────────────────────────────────────
+# ── Gated Fusion Module ────────────────────────────────────────────────────
 class GatedFusion(nn.Module):
     """
-    Learns per-frame, per-dimension weighting between acoustic and semantic features.
-    gate = σ(W_g @ [feat_a; feat_s] + b_g)
-    fused = gate * feat_a + (1 - gate) * feat_s
+    Learnable gated fusion that combines acoustic and semantic encoder features.
+
+    For each time frame and each feature dimension, the gate learns how much to
+    trust the acoustic encoder vs the semantic encoder. The gate is a sigmoid
+    function, so values near 1 mean "use acoustic" and near 0 mean "use semantic".
+
+    Equation:
+        gate = σ(W_g · [feat_a; feat_s] + b_g)           # (B, T, 768)
+        fused = gate ⊙ feat_a + (1 - gate) ⊙ feat_s      # (B, T, 768)
+        output = Dropout(LayerNorm(fused))
+
+    Args:
+        dim (int): Feature dimension of each encoder output (768 for Whisper Small)
+        dropout (float): Dropout rate applied after LayerNorm
     """
     def __init__(self, dim=768, dropout=0.1):
         super().__init__()
+        # Input: concatenated features from both encoders (dim * 2 = 1536)
+        # Output: gate values per dimension (dim = 768)
         self.gate_linear = nn.Linear(dim * 2, dim)
         self.layer_norm = nn.LayerNorm(dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, acoustic_feat, semantic_feat):
-        # acoustic_feat, semantic_feat: (B, T, 768)
-        concat = torch.cat([acoustic_feat, semantic_feat], dim=-1)  # (B, T, 1536)
+        """
+        Forward pass: compute gated fusion of two feature tensors.
+
+        Args:
+            acoustic_feat (Tensor): Shape (B, T, 768) — acoustic encoder output
+            semantic_feat (Tensor): Shape (B, T, 768) — semantic encoder output
+
+        Returns:
+            Tensor: Shape (B, T, 768) — fused features after gating + LayerNorm + Dropout
+        """
+        # Concatenate along feature dimension: (B, T, 1536)
+        concat = torch.cat([acoustic_feat, semantic_feat], dim=-1)
+
+        # Compute gate: sigmoid squashes to [0, 1] per dimension
         gate = torch.sigmoid(self.gate_linear(concat))  # (B, T, 768)
+
+        # Weighted combination: gate=1 means full acoustic, gate=0 means full semantic
         fused = gate * acoustic_feat + (1 - gate) * semantic_feat  # (B, T, 768)
+
+        # Normalize and regularize
         fused = self.layer_norm(fused)
         fused = self.dropout(fused)
         return fused
@@ -425,33 +607,40 @@ fusion = GatedFusion(dim=768, dropout=args.dropout).to(DEVICE)
 fusion_params = sum(p.numel() for p in fusion.parameters())
 print(f"    Params: {fusion_params:,}")
 
-# ── CTC Head ─────────────────────────────────────────────────────────────────
+# ── CTC Head: maps fused features to character probabilities ────────────────
 print(f"\n  [CTC HEAD] Linear(768→{vocab_size})...")
 ctc_head = nn.Linear(768, vocab_size).to(DEVICE)
 
-# ── Warm-start CTC head ──────────────────────────────────────────────────────
+# ── Load checkpoint (resume or warm-start) ──────────────────────────────────
 start_epoch = 0
 best_dev_wer = float("inf")
 
 if args.resume:
+    # RESUME: Load everything from a previous combined training checkpoint
     ckpt_path = PROJECT_ROOT / args.resume
     print(f"\n  [RESUME] Loading combined checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+
+    # Restore fusion module and CTC head
     fusion.load_state_dict(ckpt["fusion_state_dict"])
     ctc_head.load_state_dict(ckpt["ctc_head_state_dict"])
-    # Restore encoder weights if they were unfrozen during previous training
+
+    # Restore encoder weights (critical — encoders change during unfrozen training)
     if "acoustic_encoder_state_dict" in ckpt:
         acoustic_encoder.load_state_dict(ckpt["acoustic_encoder_state_dict"])
         print(f"    Acoustic encoder restored from checkpoint")
     if "semantic_encoder_state_dict" in ckpt:
         semantic_encoder.load_state_dict(ckpt["semantic_encoder_state_dict"])
         print(f"    Semantic encoder restored from checkpoint")
+
     start_epoch = ckpt.get("epoch", 0)
     best_dev_wer = ckpt.get("dev_wer", float("inf"))
     print(f"    Resuming from epoch {start_epoch}, best dev WER: {best_dev_wer:.2f}%")
     del ckpt
 else:
-    # Warm-start CTC head from acoustic branch
+    # WARM-START: Initialize CTC head from acoustic branch checkpoint
+    # The acoustic branch CTC head already knows the char→CTC mapping,
+    # so we reuse it instead of random initialization
     ctc_ckpt_path = args.ctc_ckpt or args.acoustic_ckpt
     ctc_ckpt_full = PROJECT_ROOT / ctc_ckpt_path
     if ctc_ckpt_full.exists():
@@ -473,22 +662,19 @@ gc.collect()
 if DEVICE == "cuda":
     torch.cuda.empty_cache()
 
-# ── Param summary ────────────────────────────────────────────────────────────
+# ── Print parameter summary ────────────────────────────────────────────────
 acoustic_params = sum(p.numel() for p in acoustic_encoder.parameters())
 semantic_params = sum(p.numel() for p in semantic_encoder.parameters())
 ctc_params = sum(p.numel() for p in ctc_head.parameters())
-encoder_trainable = (acoustic_params + semantic_params) if args.unfreeze_encoders else 0
-total_trainable = fusion_params + ctc_params + encoder_trainable
+total_trainable = acoustic_params + semantic_params + fusion_params + ctc_params
 
-enc_status = "UNFROZEN" if args.unfreeze_encoders else "FROZEN"
 print(f"\n  ┌─ Parameter Summary ──────────────────────────────────────────")
-print(f"  │ Acoustic encoder: {acoustic_params:,} ({enc_status})")
-print(f"  │ Semantic encoder: {semantic_params:,} ({enc_status})")
-print(f"  │ Gated fusion:     {fusion_params:,} (trainable)")
-print(f"  │ CTC head:         {ctc_params:,} (trainable)")
+print(f"  │ Acoustic encoder: {acoustic_params:,} (unfrozen, lr={args.encoder_lr})")
+print(f"  │ Semantic encoder: {semantic_params:,} (unfrozen, lr={args.encoder_lr})")
+print(f"  │ Gated fusion:     {fusion_params:,} (trainable, lr={args.lr})")
+print(f"  │ CTC head:         {ctc_params:,} (trainable, lr={args.lr})")
 print(f"  │ Total trainable:  {total_trainable:,}")
-if args.unfreeze_encoders:
-    print(f"  │ Encoder LR: {args.encoder_lr} | Fusion LR: {args.lr}")
+print(f"  │ Encoder LR: {args.encoder_lr} | Fusion+CTC LR: {args.lr}")
 print(f"  └──────────────────────────────────────────────────────────────")
 
 if DEVICE == "cuda":
@@ -498,88 +684,122 @@ if DEVICE == "cuda":
 print()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4: Helper functions
+# STEP 4: Helper functions for audio processing
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def load_audio(path, max_sec=None):
-    """Load audio → 16kHz mono tensor."""
+    """
+    Load an audio file and convert to 16kHz mono waveform.
+
+    Args:
+        path (str): Path to audio file (mp3 or wav)
+        max_sec (float, optional): Truncate audio to this many seconds
+
+    Returns:
+        Tensor: 1D tensor of audio samples at 16kHz
+    """
     wav, sr = torchaudio.load(path)
+    # Resample to 16kHz if needed (Whisper requirement)
     if sr != SAMPLE_RATE:
         wav = torchaudio.functional.resample(wav, sr, SAMPLE_RATE)
+    # Convert stereo to mono by averaging channels
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
     wav = wav.squeeze()
+    # Truncate if too long
     if max_sec and len(wav) > int(max_sec * SAMPLE_RATE):
         wav = wav[:int(max_sec * SAMPLE_RATE)]
     return wav
 
 
 def compute_real_frames(num_samples):
-    """Whisper: mel stride=160, conv stride=2 → frames = samples // 320."""
+    """
+    Compute the number of real encoder output frames for a given audio length.
+
+    Whisper's mel spectrogram uses stride=160 samples, and the conv layers
+    further downsample by 2x, so: frames = num_samples // 160 // 2.
+    Capped at 1500 (Whisper's max sequence length for 30s audio).
+
+    Args:
+        num_samples (int): Number of audio samples at 16kHz
+
+    Returns:
+        int: Number of encoder output frames (max 1500)
+    """
     return min(num_samples // 160 // 2, 1500)
 
 
 def apply_spec_augment(mel_features):
     """
-    Apply SpecAugment data augmentation to mel spectrogram (training only).
+    Apply SpecAugment data augmentation to mel spectrogram features.
 
-    Masks random frequency bands and time steps to improve generalization.
-    Same augmented mel is fed to BOTH encoders for consistency.
-    Config: 2 frequency masks (max width 15), 2 time masks (max width 50).
+    Randomly masks frequency bands and time steps in the mel spectrogram
+    to improve model robustness. The same augmented mel is fed to BOTH
+    encoders so they see identical input.
+
+    Config: 2 frequency masks (max width 15 bins), 2 time masks (max width 50 frames)
+
+    Args:
+        mel_features (Tensor): Shape (1, 80, T) — mel spectrogram
+
+    Returns:
+        Tensor: Shape (1, 80, T) — augmented mel spectrogram (modified in-place)
     """
     _, n_freq, n_time = mel_features.shape
+
+    # Frequency masking: zero out random frequency bands
     for _ in range(2):
-        f = random.randint(0, 15)
-        f0 = random.randint(0, max(n_freq - f, 1) - 1)
+        f = random.randint(0, 15)  # mask width
+        f0 = random.randint(0, max(n_freq - f, 1) - 1)  # mask start
         mel_features[:, f0:f0 + f, :] = 0.0
+
+    # Time masking: zero out random time segments
     for _ in range(2):
-        t = random.randint(0, 50)
-        t0 = random.randint(0, max(n_time - t, 1) - 1)
+        t = random.randint(0, 50)  # mask width
+        t0 = random.randint(0, max(n_time - t, 1) - 1)  # mask start
         mel_features[:, :, t0:t0 + t] = 0.0
+
     return mel_features
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 5: Component verification
+# STEP 5: Component verification (quick sanity check before training)
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
 print("STEP 5: Component verification")
 print("=" * 70)
 
+# Run one forward + backward pass to verify everything works
 test_clip = train_clips[0]
 test_wav = load_audio(test_clip["audio_path"], max_sec=15.0)
 print(f"  Test: {test_clip['clip_name']} ({len(test_wav)/SAMPLE_RATE:.1f}s, {test_clip['language']})")
 
-# Mel + SpecAugment
+# Mel spectrogram + SpecAugment
 mel = feat_extractor(test_wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors="pt")
 mel_aug = apply_spec_augment(mel.input_features.clone())
 print(f"  Mel: {tuple(mel.input_features.shape)} → SpecAugment applied")
 
-# Both encoders forward
-if args.unfreeze_encoders:
-    acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
-    semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
-else:
-    with torch.no_grad():
-        acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
-        semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
+# Forward pass through both encoders (WITH gradients — encoders are unfrozen)
+acoustic_out = acoustic_encoder(mel_aug.to(DEVICE)).last_hidden_state
+semantic_out = semantic_encoder(mel_aug.to(DEVICE)).last_hidden_state
 
+# Trim to real frames (ignore padding frames beyond actual audio length)
 real_frames = compute_real_frames(len(test_wav))
 acoustic_feat = acoustic_out[:, :real_frames, :]
 semantic_feat = semantic_out[:, :real_frames, :]
 print(f"  Acoustic encoder: {tuple(acoustic_feat.shape)}")
 print(f"  Semantic encoder: {tuple(semantic_feat.shape)}")
 
-# Fusion forward (with grad)
+# Fusion forward
 fused = fusion(acoustic_feat, semantic_feat)
 print(f"  Gated fusion: {tuple(fused.shape)}")
 
-# CTC Head
+# CTC Head forward
 char_logits = ctc_head(fused)
 print(f"  CTC head: {tuple(char_logits.shape)}")
 
-# CTC loss
+# CTC loss + backward pass to verify gradients
 gt = normalize_text(test_clip["ground_truth"])
 target_indices = text_to_indices(gt, char_to_idx)
 if target_indices and real_frames > len(target_indices):
@@ -592,22 +812,23 @@ if target_indices and real_frames > len(target_indices):
     print(f"  CTC loss: {ctc_loss.item():.4f}")
     print(f"  Ground truth: '{gt}' ({len(target_indices)} chars)")
 
-    # Verify gradients
+    # Verify gradients flow through ALL components
     ctc_loss.backward()
     fusion_grads = sum(1 for p in fusion.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     ctc_grads = sum(1 for p in ctc_head.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     acoustic_grads = sum(1 for p in acoustic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
     semantic_grads = sum(1 for p in semantic_encoder.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
-    enc_expect = ">0" if args.unfreeze_encoders else "should=0"
     print(f"  Gradients: fusion={fusion_grads}>0 | ctc_head={ctc_grads}>0 | "
-          f"acoustic_enc={acoustic_grads}({enc_expect}) | semantic_enc={semantic_grads}({enc_expect})")
+          f"acoustic_enc={acoustic_grads}>0 | semantic_enc={semantic_grads}>0")
 
-    # Greedy decode check
+    # Quick decode check
     pred = ctc_greedy_decode(char_logits.squeeze(0).detach(), idx_to_char)
     print(f"  Decode test: '{pred[:80]}...'")
 
 fusion.zero_grad()
 ctc_head.zero_grad()
+acoustic_encoder.zero_grad()
+semantic_encoder.zero_grad()
 
 if DEVICE == "cuda":
     peak = torch.cuda.max_memory_allocated() / 1024**2
@@ -618,41 +839,41 @@ if DEVICE == "cuda":
 print(f"  ALL VERIFIED\n")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 6: Training setup
+# STEP 6: Training setup (optimizer, scheduler, loss)
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
 print("STEP 6: Training setup")
 print("=" * 70)
 
-# Trainable params: fusion + CTC head (always), encoders (if unfrozen)
+# Collect parameters into two groups with DIFFERENT learning rates:
+#   - Encoder params: small LR (1e-5) — don't destroy pre-trained features
+#   - Fusion + CTC params: large LR (1e-3) — these need to learn fast
+encoder_params = list(acoustic_encoder.parameters()) + list(semantic_encoder.parameters())
 fusion_ctc_params = list(fusion.parameters()) + list(ctc_head.parameters())
+trainable_params = encoder_params + fusion_ctc_params
 
-if args.unfreeze_encoders:
-    encoder_params = list(acoustic_encoder.parameters()) + list(semantic_encoder.parameters())
-    trainable_params = encoder_params + fusion_ctc_params
-    optimizer = torch.optim.AdamW([
-        {"params": encoder_params, "lr": args.encoder_lr},   # small LR for encoders
-        {"params": fusion_ctc_params, "lr": args.lr},         # normal LR for fusion + CTC
-    ], weight_decay=0.01)
-else:
-    trainable_params = fusion_ctc_params
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
+optimizer = torch.optim.AdamW([
+    {"params": encoder_params, "lr": args.encoder_lr},    # 1e-5 for encoders
+    {"params": fusion_ctc_params, "lr": args.lr},          # 1e-3 for fusion + CTC
+], weight_decay=0.01)
 
 num_epochs = args.epochs
-total_steps_est = len(train_clips) * num_epochs  # no grad_accum
+total_steps_est = len(train_clips) * num_epochs
 warmup_steps = min(args.warmup_steps, total_steps_est // 4)
 
 
+# Learning rate schedule: linear warmup → cosine decay to zero
 def lr_lambda(step):
+    """Compute LR multiplier for current step: warmup then cosine decay."""
     if step < warmup_steps:
-        return step / max(warmup_steps, 1)
+        return step / max(warmup_steps, 1)  # Linear warmup from 0 to 1
     progress = (step - warmup_steps) / max(total_steps_est - warmup_steps, 1)
-    return max(0.0, 0.5 * (1.0 + np.cos(np.pi * progress)))
+    return max(0.0, 0.5 * (1.0 + np.cos(np.pi * progress)))  # Cosine decay
 
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-# Load optimizer state if resuming
+# Restore optimizer/scheduler state if resuming
 if args.resume:
     resume_ckpt = torch.load(PROJECT_ROOT / args.resume, map_location=DEVICE, weights_only=False)
     if "optimizer_state_dict" in resume_ckpt:
@@ -664,29 +885,43 @@ if args.resume:
 
 ctc_loss_fn = nn.CTCLoss(blank=BLANK_IDX, zero_infinity=True)
 
-if args.unfreeze_encoders:
-    print(f"  Optimizer: AdamW (encoder_lr={args.encoder_lr}, fusion_lr={args.lr}, wd=0.01)")
-else:
-    print(f"  Optimizer: AdamW (lr={args.lr}, wd=0.01)")
+print(f"  Optimizer: AdamW (encoder_lr={args.encoder_lr}, fusion_lr={args.lr}, wd=0.01)")
 print(f"  Scheduler: linear warmup ({warmup_steps} steps) + cosine decay")
 print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)}")
-trainable_desc = "encoders + fusion + CTC head" if args.unfreeze_encoders else "fusion + CTC head"
-print(f"  Trainable: {total_trainable:,} params ({trainable_desc})")
+print(f"  Trainable: {total_trainable:,} params (encoders + fusion + CTC head)")
 print(f"  Dropout: {args.dropout}")
 if args.patience > 0:
     print(f"  Early stopping: patience={args.patience} (on dev WER)")
 print()
 
 
-# ── Dev evaluation function ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Dev evaluation function
+# ══════════════════════════════════════════════════════════════════════════════
 
 def evaluate_dev(dev_clips_list):
     """
-    Evaluate on dev set — WER from fused features + CTC head.
-    Returns: (dev_wer, dev_loss, all_preds, lang_wers)
+    Evaluate the fused model on the dev set and compute WER.
+
+    Runs inference (no gradients) on all dev clips, computes CTC loss and
+    performs greedy decoding to get predicted text, then computes per-language
+    and overall Word Error Rate.
+
+    Args:
+        dev_clips_list (list[dict]): List of dev clip dicts from load_clips_from_csv
+
+    Returns:
+        tuple: (dev_wer, dev_loss, all_preds, lang_wers) where:
+            - dev_wer (float): Overall WER as percentage (e.g., 18.5)
+            - dev_loss (float): Average CTC loss on dev set
+            - all_preds (list[tuple]): List of (reference, hypothesis) pairs
+            - lang_wers (dict): Per-language WER: {"hi": 15.2, "mr": 25.0, "en": 16.0}
     """
+    # Set all modules to eval mode (disables dropout, uses running stats for BatchNorm)
     fusion.eval()
     ctc_head.eval()
+    acoustic_encoder.eval()
+    semantic_encoder.eval()
 
     all_refs = []
     all_hyps = []
@@ -694,18 +929,18 @@ def evaluate_dev(dev_clips_list):
     lang_refs = {"hi": [], "mr": [], "en": []}
     lang_hyps = {"hi": [], "mr": [], "en": []}
 
-    with torch.no_grad():
+    with torch.no_grad():  # No gradients needed during evaluation
         for clip in tqdm(dev_clips_list, desc="  Dev eval", unit="clip",
                          bar_format="{l_bar}{bar:20}{r_bar}"):
             try:
                 wav = load_audio(clip["audio_path"], max_sec=args.max_audio_sec)
-                if len(wav) < 8000:
+                if len(wav) < 8000:  # Skip clips shorter than 0.5s
                     continue
 
-                # Mel (no SpecAugment for eval)
+                # Mel spectrogram (NO SpecAugment during eval)
                 mel = feat_extractor(wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors="pt")
 
-                # Both encoders
+                # Forward pass through both encoders
                 a_out = acoustic_encoder(mel.input_features.to(DEVICE)).last_hidden_state
                 s_out = semantic_encoder(mel.input_features.to(DEVICE)).last_hidden_state
                 real_frames = compute_real_frames(len(wav))
@@ -716,7 +951,7 @@ def evaluate_dev(dev_clips_list):
                 fused = fusion(a_feat, s_feat)
                 logits = ctc_head(fused)  # (1, T, 85)
 
-                # CTC loss
+                # Compute CTC loss for monitoring
                 gt = normalize_text(clip["ground_truth"])
                 target_indices = text_to_indices(gt, char_to_idx)
                 if target_indices and real_frames > len(target_indices):
@@ -728,7 +963,7 @@ def evaluate_dev(dev_clips_list):
                     if not (torch.isnan(loss) or torch.isinf(loss)):
                         losses.append(loss.item())
 
-                # Decode
+                # Greedy CTC decode
                 predicted = ctc_greedy_decode(logits.squeeze(0), idx_to_char)
                 ref = normalize_text(clip["ground_truth"])
                 if ref:
@@ -746,8 +981,11 @@ def evaluate_dev(dev_clips_list):
             except Exception:
                 continue
 
+    # Restore training mode for all modules
     fusion.train()
     ctc_head.train()
+    acoustic_encoder.train()
+    semantic_encoder.train()
 
     dev_wer = compute_corpus_wer(all_refs, all_hyps) * 100 if all_refs else 999.0
     dev_loss = np.mean(losses) if losses else 0.0
@@ -770,6 +1008,7 @@ mode_str = f"VERIFICATION ({len(train_clips)} clips)" if args.verify else "Full 
 print(f"STEP 7: {mode_str}")
 print("=" * 70)
 
+# Set seeds for reproducibility
 random.seed(args.seed)
 torch.manual_seed(args.seed)
 if DEVICE == "cuda":
@@ -780,14 +1019,14 @@ global_step = 0
 patience_counter = 0
 training_start = time.time()
 
+# Ensure all modules are in training mode
 fusion.train()
 ctc_head.train()
-if args.unfreeze_encoders:
-    acoustic_encoder.train()
-    semantic_encoder.train()
+acoustic_encoder.train()
+semantic_encoder.train()
 
 for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
-    random.shuffle(train_clips)
+    random.shuffle(train_clips)  # Shuffle data each epoch
 
     ep_losses = []
     ep_start = time.time()
@@ -798,71 +1037,69 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
 
     for i, clip in enumerate(pbar):
         try:
-            # ── Load audio ──
+            # ── 1. Load audio waveform ──
             wav = load_audio(clip["audio_path"], max_sec=args.max_audio_sec)
-            if len(wav) < 8000:
+            if len(wav) < 8000:  # Skip clips shorter than 0.5s
                 skipped += 1
                 continue
 
             num_samples = len(wav)
 
-            # ── Mel + SpecAugment ──
+            # ── 2. Compute mel spectrogram + apply SpecAugment ──
             mel = feat_extractor(wav.numpy(), sampling_rate=SAMPLE_RATE, return_tensors="pt")
             mel_features = apply_spec_augment(mel.input_features.clone())
             mel_gpu = mel_features.to(DEVICE)
 
-            # ── Both encoders forward ──
-            if args.unfreeze_encoders:
-                a_out = acoustic_encoder(mel_gpu).last_hidden_state
-                s_out = semantic_encoder(mel_gpu).last_hidden_state
-            else:
-                with torch.no_grad():
-                    a_out = acoustic_encoder(mel_gpu).last_hidden_state
-                    s_out = semantic_encoder(mel_gpu).last_hidden_state
+            # ── 3. Forward pass through both encoders (WITH gradients) ──
+            a_out = acoustic_encoder(mel_gpu).last_hidden_state  # (1, 1500, 768)
+            s_out = semantic_encoder(mel_gpu).last_hidden_state  # (1, 1500, 768)
 
+            # Trim to real frames (drop padding beyond actual audio)
             real_frames = compute_real_frames(num_samples)
             a_feat = a_out[:, :real_frames, :]  # (1, T, 768)
             s_feat = s_out[:, :real_frames, :]  # (1, T, 768)
 
-            # ── Fusion + CTC head (with grad) ──
+            # ── 4. Gated fusion + CTC head ──
             fused = fusion(a_feat, s_feat)  # (1, T, 768)
             logits = ctc_head(fused)  # (1, T, 85)
 
-            # ── CTC loss ──
+            # ── 5. Compute CTC loss ──
             gt = normalize_text(clip["ground_truth"])
             target_indices = text_to_indices(gt, char_to_idx)
 
+            # Skip if target is empty or longer than available frames
             if not target_indices or real_frames <= len(target_indices):
                 skipped += 1
                 continue
 
-            log_probs = logits.log_softmax(dim=-1).permute(1, 0, 2)  # (T, 1, 85)
+            log_probs = logits.log_softmax(dim=-1).permute(1, 0, 2)  # (T, 1, 85) — CTC format
             targets = torch.tensor(target_indices, dtype=torch.long).to(DEVICE)
             input_lengths = torch.tensor([real_frames], dtype=torch.long).to(DEVICE)
             target_lengths = torch.tensor([len(target_indices)], dtype=torch.long).to(DEVICE)
 
             loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
+            # Skip NaN/Inf losses (rare edge cases)
             if torch.isnan(loss) or torch.isinf(loss):
                 skipped += 1
                 continue
 
-            # ── Backward + step ──
+            # ── 6. Backward pass + parameter update ──
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            loss.backward()  # Gradients flow through: CTC head → fusion → BOTH encoders
+            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)  # Prevent explosion
             optimizer.step()
             scheduler.step()
             global_step += 1
 
             ep_losses.append(loss.item())
 
-            # ── Cleanup ──
+            # ── 7. Free GPU memory ──
             if DEVICE == "cuda":
                 del a_out, s_out, a_feat, s_feat, fused, logits, mel_gpu
                 torch.cuda.empty_cache()
 
-            # Progress bar
+            # Update progress bar
             if ep_losses:
                 avg_recent = np.mean(ep_losses[-20:])
                 pbar.set_postfix({
@@ -887,7 +1124,7 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
     print(f"\n  ┌─ Epoch {epoch} ─────────────────────────────────────────────────")
     print(f"  │ CTC loss:   {avg_loss:.4f}")
     print(f"  │ Steps: {len(ep_losses)} ({skipped} skipped) | Time: {ep_time:.0f}s ({ep_time/60:.1f}min)")
-    print(f"  │ LR: {scheduler.get_last_lr()[0]:.2e}")
+    print(f"  │ LR: encoder={scheduler.get_last_lr()[0]:.2e}, fusion={scheduler.get_last_lr()[1]:.2e}")
     if DEVICE == "cuda":
         peak = torch.cuda.max_memory_allocated() / 1024**2
         print(f"  │ Peak GPU: {peak:.0f} MB")
@@ -905,6 +1142,7 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
         print(f"  │ Loss: {dev_loss:.4f}")
         print(f"  └──────────────────────────────────────────────────────────────")
 
+        # Show sample predictions
         if dev_preds:
             n_show = min(3, len(dev_preds))
             print(f"\n  Sample predictions:")
@@ -913,7 +1151,7 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
                 print(f"    HYP: {hyp}")
                 print()
 
-    # Save stats
+    # Save epoch stats
     epoch_stats.append({
         "epoch": epoch,
         "train_loss": avg_loss,
@@ -921,14 +1159,19 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
         "lang_wers": lang_wers,
     })
 
-    # ── Checkpoint ───────────────────────────────────────────────────────
+    # ── Checkpoint saving ────────────────────────────────────────────────
     if not args.verify:
         ckpt_data = {
             "epoch": epoch,
+            # Model weights
             "fusion_state_dict": fusion.state_dict(),
             "ctc_head_state_dict": ctc_head.state_dict(),
+            "acoustic_encoder_state_dict": acoustic_encoder.state_dict(),
+            "semantic_encoder_state_dict": semantic_encoder.state_dict(),
+            # Optimizer state (for resume)
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            # Metrics
             "train_loss": avg_loss,
             "dev_wer": dev_wer,
             "dev_loss": dev_loss,
@@ -937,9 +1180,6 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             "global_step": global_step,
             "args": vars(args),
         }
-        if args.unfreeze_encoders:
-            ckpt_data["acoustic_encoder_state_dict"] = acoustic_encoder.state_dict()
-            ckpt_data["semantic_encoder_state_dict"] = semantic_encoder.state_dict()
 
         if dev_wer < best_dev_wer:
             best_dev_wer = dev_wer
@@ -963,13 +1203,14 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
 total_time = time.time() - training_start
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 8: Final results
+# STEP 8: Final results summary
 # ══════════════════════════════════════════════════════════════════════════════
 print("=" * 70)
 print("STEP 8: Results")
 print("=" * 70)
 
 if epoch_stats:
+    # Print epoch-by-epoch table
     print(f"\n  {'Epoch':<8} {'Loss':>8} {'DevWER':>10} {'DevLoss':>8} {'Hindi':>8} {'Marathi':>8} {'English':>8}")
     print(f"  {'─'*8} {'─'*8} {'─'*10} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")
     for s in epoch_stats:
@@ -980,6 +1221,7 @@ if epoch_stats:
         print(f"  {s['epoch']:<8} {s['train_loss']:>8.4f} {wer_str:>10} {s['dev_loss']:>8.4f} "
               f"{hi_str:>8} {mr_str:>8} {en_str:>8}")
 
+    # Print learning summary
     if len(epoch_stats) >= 2:
         first_loss = epoch_stats[0]["train_loss"]
         last_loss = epoch_stats[-1]["train_loss"]
@@ -991,6 +1233,7 @@ if epoch_stats:
             else:
                 print(f"  WARNING -- loss not decreasing")
 
+    # Print comparison with individual encoders
     if best_dev_wer < 999:
         print(f"\n  Best dev WER: {best_dev_wer:.2f}%")
         print(f"\n  Comparison:")

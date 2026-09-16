@@ -1,0 +1,110 @@
+\begin{thebibliography}{15}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Agarwal et~al.(2020)]{agarwal2019aser}
+Nishant Agarwal et~al.
+\newblock A dataset for measuring reading levels in india at scale.
+\newblock In \emph{IEEE International Conference on Acoustics, Speech and
+  Signal Processing (ICASSP)}, 2020.
+
+\bibitem[Ao et~al.(2022)Ao, Wang, Zhou, et~al.]{ao2022speecht5}
+Junyi Ao, Rui Wang, Long Zhou, et~al.
+\newblock Speecht5: Unified-modal encoder-decoder pre-training for spoken
+  language processing.
+\newblock \emph{Association for Computational Linguistics (ACL)}, 2022.
+
+\bibitem[Arevalo et~al.(2017)Arevalo, Solorio, Montes-y G{\'o}mez, and
+  Gonz{\'a}lez]{arevalo2017gated}
+John Arevalo, Thamar Solorio, Manuel Montes-y G{\'o}mez, and Fabio~A
+  Gonz{\'a}lez.
+\newblock Gated multimodal units for information fusion.
+\newblock \emph{International Conference on Learning Representations (ICLR)
+  Workshop}, 2017.
+
+\bibitem[Attia et~al.(2024)Attia, Liu, Ai, Demszky, and
+  Espy-Wilson]{attia2024kidwhisper}
+Ahmed~Adel Attia, Jing Liu, Wei Ai, Dorottya Demszky, and Carol Espy-Wilson.
+\newblock Kid-whisper: Towards bridging the performance gap in automatic speech
+  recognition for children vs.\ adults.
+\newblock In \emph{AAAI/ACM Conference on AI, Ethics, and Society (AIES)},
+  2024.
+
+\bibitem[Bapna et~al.(2022)Bapna, Chung, Wu, Gulati, Jia,
+  et~al.]{bapna2022slam}
+Ankur Bapna, Yu-an Chung, Nan Wu, Anmol Gulati, Ye~Jia, et~al.
+\newblock Slam: A unified encoder for speech and language modeling via
+  speech-text joint pre-training.
+\newblock \emph{arXiv preprint arXiv:2110.10329}, 2022.
+
+\bibitem[Bhogale et~al.(2023)Bhogale, Sundaresan, Raman, Javed, Khapra, and
+  Kumar]{bhogale2023indicwhisper}
+Kaushal Bhogale, Sai Sundaresan, Abhigyan Raman, Tahir Javed, Mitesh~M. Khapra,
+  and Pratyush Kumar.
+\newblock Vistaar: Diverse benchmarks and training sets for indian language
+  {ASR}.
+\newblock In \emph{Interspeech}, 2023.
+
+\bibitem[Graves et~al.(2006)Graves, Fern{\'a}ndez, Gomez, and
+  Schmidhuber]{graves2006ctc}
+Alex Graves, Santiago Fern{\'a}ndez, Faustino Gomez, and J{\"u}rgen
+  Schmidhuber.
+\newblock Connectionist temporal classification: Labelling unsegmented sequence
+  data with recurrent neural networks.
+\newblock \emph{International Conference on Machine Learning (ICML)}, 2006.
+
+\bibitem[Hinton et~al.(2015)Hinton, Vinyals, and Dean]{hinton2015distilling}
+Geoffrey Hinton, Oriol Vinyals, and Jeff Dean.
+\newblock Distilling the knowledge in a neural network.
+\newblock In \emph{NIPS Deep Learning Workshop}, 2015.
+
+\bibitem[Jain et~al.(2023)Jain, Barcovschi, Yiwere, Corcoran, and
+  Cucu]{jain2023}
+Rishabh Jain, Andrei Barcovschi, Mariam Yiwere, Peter Corcoran, and Horia Cucu.
+\newblock Adaptation of whisper models to child speech recognition.
+\newblock In \emph{Interspeech}, 2023.
+
+\bibitem[{AI4Bharat}(2024)]{ai4bharat2024indicconformer}
+{AI4Bharat}.
+\newblock Indicconformer: Multilingual conformer {ASR} for 22 indian languages,
+  2024.
+\newblock \url{https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual}.
+
+\bibitem[Javed et~al.(2024{\natexlab{b}})]{javed2024indicvoices}
+Tahir Javed et~al.
+\newblock Indicvoices: Towards building an inclusive multilingual speech
+  dataset for indian languages.
+\newblock In \emph{Findings of the Association for Computational Linguistics
+  (ACL)}, 2024{\natexlab{b}}.
+
+\bibitem[Khanuja et~al.(2021)Khanuja, Bansal, Mehtani, Khosla, Dey, Gopber,
+  et~al.]{khanuja2021muril}
+Simran Khanuja, Diksha Bansal, Sarvesh Mehtani, Savya Khosla, Atreyee Dey,
+  Norah Gopber, et~al.
+\newblock Muril: Multilingual representations for indian languages.
+\newblock \emph{arXiv preprint arXiv:2103.10730}, 2021.
+
+\bibitem[Lee et~al.(1999)Lee, Potamianos, and Narayanan]{lee1999acoustics}
+Sungbok Lee, Alexandros Potamianos, and Shrikanth Narayanan.
+\newblock Acoustics of children's speech: Developmental changes of temporal and
+  spectral parameters.
+\newblock In \emph{Journal of the Acoustical Society of America}, volume 105,
+  pp.\  1455--1468, 1999.
+
+\bibitem[Liu et~al.(2024)Liu, Qin, Peng, and Lee]{liu2024}
+Wei Liu, Ying Qin, Zhiyuan Peng, and Tan Lee.
+\newblock Sparsely shared {LoRA} on whisper for child speech recognition.
+\newblock In \emph{IEEE International Conference on Acoustics, Speech and
+  Signal Processing (ICASSP)}, 2024.
+
+\bibitem[Radford et~al.(2023)Radford, Kim, Xu, Brockman, McLeavey, and
+  Sutskever]{radford2023whisper}
+Alec Radford, Jong~Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, and
+  Ilya Sutskever.
+\newblock Robust speech recognition via large-scale weak supervision.
+\newblock \emph{International Conference on Machine Learning (ICML)}, 2023.
+
+\end{thebibliography}
