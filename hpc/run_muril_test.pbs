@@ -1,0 +1,64 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: MuRIL Cross-Modal KD — TEST RUN (3000 clips)
+# ============================================================
+# Submit: qsub hpc/run_muril_test.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/muril_test.log
+# ============================================================
+# Quick test before full run. 3000 clips, 10 epochs.
+# Compares with semantic joint training test run (52.45% WER).
+#
+# PREREQUISITE: Run step0 and step1 FIRST:
+#   python experiments/semantic_branch/05_muril_cross_modal/step0_precompute_muril_embeddings.py --split all
+#   python experiments/semantic_branch/05_muril_cross_modal/step1_precompute_ctc_alignments.py --split all
+#
+# NOTE: MuRIL model (google/muril-base-cased) must be cached.
+#   Pre-cache on login node:
+#   python -c "from transformers import AutoModel, AutoTokenizer; AutoModel.from_pretrained('google/muril-base-cased'); AutoTokenizer.from_pretrained('google/muril-base-cased')"
+# ============================================================
+
+#PBS -N muril_test
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=08:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/muril_test.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  MURIL CROSS-MODAL KD: TEST RUN (3000 clips, 10 epochs)" | tee -a $LOGFILE
+echo "  Warm start: semantic_mse/best_dev.pt (encoder)" | tee -a $LOGFILE
+echo "  CTC Head 1: semantic_ctc/best_wer.pt (warm)" | tee -a $LOGFILE
+echo "  Loss: alpha*MSE_word + (1-alpha)*CTC" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/semantic_branch/05_muril_cross_modal/step2_muril_training.py \
+    --epochs 10 \
+    --patience 5 \
+    --lr 2e-5 \
+    --warmup_steps 500 \
+    --alpha_start 0.3 \
+    --freeze_layers 6 \
+    --grad_accum 4 \
+    --dropout 0.1 \
+    --test_clips 3000 \
+    --checkpoint checkpoints/semantic_mse/best_dev.pt \
+    --ctc_checkpoint checkpoints/semantic_ctc/best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  MURIL TEST RUN DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
