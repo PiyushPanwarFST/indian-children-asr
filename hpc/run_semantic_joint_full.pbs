@@ -1,0 +1,75 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Semantic Branch — Joint Training (MSE + CTC) FULL RUN
+# ============================================================
+# Submit: qsub hpc/run_semantic_joint_full.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/semantic_joint_full.log
+# ============================================================
+# Previous test run (3000 clips, epoch 3): 52.45% WER (Head 1)
+# Same checkpoint decoded with Head 2: 49.05% WER
+# This full run uses ALL clips, 30 epochs.
+# After training: evaluate with step2_semantic_evaluate.py
+# using CTC Head 2 (BPE vocab) as professor suggested.
+# ============================================================
+
+#PBS -N sem_joint_full
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/semantic_joint_full.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  SEMANTIC BRANCH: JOINT TRAINING (MSE + CTC) — FULL RUN" | tee -a $LOGFILE
+echo "  Warm start: semantic_mse/best_dev.pt (MSE distillation)" | tee -a $LOGFILE
+echo "  CTC Head 1 warm: semantic_ctc/best_wer.pt (sequential)" | tee -a $LOGFILE
+echo "  Loss: alpha*MSE(Head2) + (1-alpha)*CTC(Head1)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# Phase 1: Full joint training
+python -u experiments/semantic_branch/04_joint_training/step3_semantic_joint_training.py \
+    --epochs 30 \
+    --patience 7 \
+    --lr 2e-5 \
+    --warmup_steps 1000 \
+    --alpha_start 0.3 \
+    --freeze_layers 6 \
+    --grad_accum 4 \
+    --dropout 0.1 \
+    --checkpoint checkpoints/semantic_mse/best_dev.pt \
+    --ctc_checkpoint checkpoints/semantic_ctc/best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  JOINT TRAINING DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# Phase 2: Evaluate best checkpoint with CTC Head 2 (professor's suggestion)
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  EVALUATING WITH CTC HEAD 2 (BPE VOCAB) ON TEST SET" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/semantic_branch/02_mse_distillation/step2_semantic_evaluate.py \
+    --checkpoint checkpoints/semantic_joint/best_dev.pt \
+    --split test \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  ALL DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
