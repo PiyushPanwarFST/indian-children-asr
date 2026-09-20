@@ -35,8 +35,8 @@ echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>
 echo "============================================================" | tee -a $LOGFILE
 
 python -u experiments/combined_branch/01_feature_fusion/step2_combined_evaluate.py \
-    --checkpoint checkpoints/combined_unfrozen/best_wer.pt \
-    --split test \
+    --combined_ckpt checkpoints/combined_unfrozen/best_wer.pt \
+    --eval_set test \
     --skip_baseline \
     2>&1 | tee -a $LOGFILE
 
