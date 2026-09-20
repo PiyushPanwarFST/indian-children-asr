@@ -30,8 +30,8 @@
   -----------------------------------------------------------------------------------------------
   # Combined Branch — Dual-Encoder Gated Fusion
 
- 11. Gated Fusion (frozen encoders)               16.85%     25.01%     16.06%     18.92%   ~490M
- 12. Gated Fusion (unfrozen top-6, diff LR)       12.67%     19.55%     13.76%     14.57%   ~490M
+ 11. Gated Fusion (frozen encoders)               16.85%     25.01%     16.06%     18.92%   ~490M†
+ 12. Gated Fusion (unfrozen top-6, diff LR)       12.67%     19.55%     13.76%     14.57%   ~490M†
 
 =================================================================================================
 
@@ -39,11 +39,14 @@
   Training used all clips with teacher logits (Hindi+Marathi, 9169 clips).
   Head 2 decode = IndicConformer BPE vocab (257 tokens) — professor's suggestion.
 
-Model size notes:
-  - Row 12 combined: 2 × Whisper Small encoders (244M each) + GatedFusion (~1.18M)
-    + CTC head (~65K). Trainable: ~89M (top-6 of each encoder + fusion + CTC head).
-  - Row 10 baseline: full encoder+decoder fine-tuned, uses Whisper BPE decoder (51K tokens).
-  - Our system uses CTC (no decoder) → faster inference, language-model-free.
+† Combined model size breakdown:
+  - Total params (inference): ~490M  (2 × 244M encoders + fusion + CTC head)
+  - Trainable params (row 11): ~1.25M  (fusion + CTC head only, encoders FROZEN)
+  - Trainable params (row 12): ~89M   (top-6 of each encoder + fusion + CTC head)
+  - Baseline (row 10):         244M   (full encoder+decoder, ALL layers trainable)
+  Note: Our system is heavier at inference (490M vs 244M) but uses no autoregressive
+  decoder — CTC decoding is fully parallel and faster at runtime than Whisper's
+  beam-search decoder.
 
 # Key Results
   Best overall WER:      14.30% (Whisper fine-tuned) / 14.57% (our dual-encoder fusion)
