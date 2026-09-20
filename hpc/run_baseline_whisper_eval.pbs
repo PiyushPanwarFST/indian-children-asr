@@ -1,0 +1,46 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Baseline Whisper Fine-tuned — Test Set Evaluation
+# ============================================================
+# Submit: qsub hpc/run_baseline_whisper_eval.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/baseline_whisper_eval.log
+# ============================================================
+# Evaluates best_wer.pt (13.17% dev WER, epoch 12) on test set.
+# Uses seq2seq decoding (model.generate()) — NOT CTC.
+# ============================================================
+
+#PBS -N baseline_eval
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_whisper_eval.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  BASELINE WHISPER SMALL: TEST SET EVALUATION" | tee -a $LOGFILE
+echo "  Checkpoint: best_wer.pt (13.17% dev WER)" | tee -a $LOGFILE
+echo "  Decoding: seq2seq (model.generate)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/baselines/baseline_finetune_evaluate.py \
+    --model whisper-small \
+    --checkpoint checkpoints/baselines/whisper-small/best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE

@@ -1,0 +1,46 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Combined Unfrozen — Test Set Evaluation (best_wer.pt)
+# ============================================================
+# Submit: qsub hpc/run_combined_test_eval_v2.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/combined_test_eval_v2.log
+# ============================================================
+# Evaluates the BEST combined unfrozen checkpoint (12.38% dev WER)
+# on the full test set. Uses CTC greedy decode.
+# ============================================================
+
+#PBS -N comb_eval_v2
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/combined_test_eval_v2.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  COMBINED UNFROZEN: TEST SET EVALUATION (best_wer.pt)" | tee -a $LOGFILE
+echo "  Best dev WER: 12.38% (from LR-fixed resume)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+python -u experiments/combined_branch/01_feature_fusion/step2_combined_evaluate.py \
+    --checkpoint checkpoints/combined_unfrozen/best_wer.pt \
+    --split test \
+    --skip_baseline \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  DONE: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
