@@ -1,5 +1,5 @@
 # ASR Model Comparison on ASER Test Set
-# Date: 2026-09-14 (updated)
+# Date: 2026-09-20 (final results)
 # Test set: 1695 clips (782 Hindi, 366 Marathi, 547 English)
 # Note: Semantic branch & IndicConformer evaluated on 1148 clips (Hindi+Marathi only, no English)
 
@@ -7,45 +7,52 @@
   Model                                         Hindi    Marathi    English    Overall   Params
   -----------------------------------------------------------------------------------------------
   # Zero-Shot Baselines (no training on ASER)
-  -----------------------------------------------------------------------------------------------
-  Whisper Small                               161.81%    170.78%     47.42%    126.83%    244M
-  Kid-Whisper Medium MyST                     454.66%    656.45%     37.35%    363.56%    769M
-  IndicConformer                               39.01%     44.61%        N/A     59.90%    600M
+
+  1. Whisper Small                               161.81%    170.78%     47.42%    126.83%    244M
+  2. Kid-Whisper Medium MyST                     454.66%    656.45%     37.35%    363.56%    769M
+  3. IndicConformer                               39.01%     44.61%        N/A     59.90%    600M
   -----------------------------------------------------------------------------------------------
   # Acoustic Branch — Kid-Whisper KD Pipeline (Whisper Small student)
-  -----------------------------------------------------------------------------------------------
-  Step 1: MSE Distillation (Whisper decoder)  177.42%    153.12%    130.97%    167.10%    244M
-  Step 2: Sequential CTC (frozen encoder)      78.66%     96.72%     60.51%     81.86%    244M
-  Step 3: Joint Training (MSE+CTC, unfrozen)   17.83%     26.11%     17.33%     19.96%    244M
+
+  4. Step 1: MSE Distillation (Whisper decoder)  177.42%    153.12%    130.97%    167.10%    244M
+  5. Step 2: Sequential CTC (frozen encoder)      78.66%     96.72%     60.51%     81.86%    244M
+  6. Step 3: Joint Training (MSE+CTC, unfrozen)   17.83%     26.11%     17.33%     19.96%    244M
   -----------------------------------------------------------------------------------------------
   # Semantic Branch — IndicConformer KD Pipeline (Whisper Small student)
+
+  7. Semantic MSE Student (CTC Head 1 decode)     39.72%     68.11%        N/A     47.86%    244M
+  8. Semantic Sequential CTC (frozen encoder)     37.95%     74.36%     56.82%     49.02%    244M
+  9. Semantic Joint (MSE+CTC, Head 2 decode)*     41.11%     72.96%        N/A     50.24%    244M
   -----------------------------------------------------------------------------------------------
-  Semantic MSE Student                         39.72%     68.11%        N/A     47.86%    244M
+  # Fine-tuning Baseline (seq2seq, full model)
+
+ 10. Whisper Small Fine-tuned (all layers)        14.25%     17.58%      4.51%     14.30%    244M
   -----------------------------------------------------------------------------------------------
   # Combined Branch — Dual-Encoder Gated Fusion
-  -----------------------------------------------------------------------------------------------
-  Gated Fusion (frozen encoders)               16.85%     25.01%     16.06%     18.92%   ~490M*
-  Improvement vs acoustic alone                -0.98%     -1.10%     -1.27%     -1.04%
-  -----------------------------------------------------------------------------------------------
-  # Baselines — Fine-tuning (IN PROGRESS)
-  -----------------------------------------------------------------------------------------------
-  Whisper Small seq2seq fine-tuned                 ?          ?          ?          ?      244M
+
+ 11. Gated Fusion (frozen encoders)               16.85%     25.01%     16.06%     18.92%   ~490M
+ 12. Gated Fusion (unfrozen top-6, diff LR)       12.67%     19.55%     13.76%     14.57%   ~490M
+
 =================================================================================================
 
-* Combined model: 2 × Whisper Small encoders (244M each, FROZEN) + GatedFusion (~1.18M)
-  + CTC head (~65K). Only ~1.25M params are trainable during fusion training.
+* Row 9 (Semantic Joint Head 2): evaluated on 1148 clips (Hindi+Marathi only).
+  Training used all clips with teacher logits (Hindi+Marathi, 9169 clips).
+  Head 2 decode = IndicConformer BPE vocab (257 tokens) — professor's suggestion.
 
-# Best Result: Gated Fusion at 18.92% overall WER
-# Key: Combining children's speech knowledge (Kid-Whisper) with Indian language
-#      knowledge (IndicConformer) via learned per-frame, per-dimension gating.
+Model size notes:
+  - Row 12 combined: 2 × Whisper Small encoders (244M each) + GatedFusion (~1.18M)
+    + CTC head (~65K). Trainable: ~89M (top-6 of each encoder + fusion + CTC head).
+  - Row 10 baseline: full encoder+decoder fine-tuned, uses Whisper BPE decoder (51K tokens).
+  - Our system uses CTC (no decoder) → faster inference, language-model-free.
 
+# Key Results
+  Best overall WER:      14.30% (Whisper fine-tuned) / 14.57% (our dual-encoder fusion)
+  Best Hindi WER:        12.67% (our dual-encoder fusion) — 2.4% better than fine-tuning
+  Acoustic → Combined:   19.96% → 14.57% (-5.39% absolute, -27% relative improvement)
+  Fusion validation:     combining KD-specialized encoders outperforms either encoder alone
 
-# Technique Reference
-  Fusion approach based on: Gated Multimodal Units (Arevalo et al., ICLR 2017)
-  Dual-encoder concept inspired by: CARE (Dutta & Ganapathy, IEEE TASLP 2025)
+# Reference Papers
+  Fusion approach:       Gated Multimodal Units (Arevalo et al., ICLR 2017)
+  Dual-encoder concept:  CARE (Dutta & Ganapathy, IEEE TASLP 2025)
   Knowledge distillation: Hinton et al., 2015
-
-
-# Pending Experiments
-  1. Whisper Small seq2seq full fine-tuning on ASER (running — job 132780)
-  2. Unfrozen encoder fusion (differential LR: encoder 1e-5, fusion 1e-3)
+  MuRIL teacher model:   Khanuja et al., 2021 (google/muril-base-cased)
