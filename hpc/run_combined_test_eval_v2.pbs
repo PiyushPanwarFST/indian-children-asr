@@ -37,6 +37,7 @@ echo "============================================================" | tee -a $LO
 python -u experiments/combined_branch/01_feature_fusion/step2_combined_evaluate.py \
     --combined_ckpt checkpoints/combined_unfrozen/best_wer.pt \
     --eval_set test \
+    --per_lang 9999 \
     --skip_baseline \
     2>&1 | tee -a $LOGFILE
 
