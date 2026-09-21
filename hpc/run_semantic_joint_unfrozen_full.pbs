@@ -1,0 +1,92 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Semantic Joint (MSE+CTC) — ALL layers UNFROZEN (FULL)
+# ============================================================
+# Submit: qsub hpc/run_semantic_joint_unfrozen_full.pbs
+# Monitor: tail -f ~/Indain_children_spech/hpc/semantic_joint_unfrozen_full.log
+# ============================================================
+# Test run (3000 clips, 10ep): 21.94% Head1, 41.49% Head2
+# Full data should improve significantly (CTC-only: 26%→16.98%)
+# ============================================================
+# Phase 1: Train with MSE+CTC, all layers unfrozen
+#   → Head 1 dev WER printed each epoch
+# Phase 2: Evaluate best checkpoint with Head 2 (BPE) on dev
+# Phase 3: Evaluate best checkpoint with Head 2 (BPE) on test
+# ============================================================
+# Languages: Hindi + Marathi ONLY (needs teacher logits for MSE)
+# Saves to: checkpoints/semantic_joint_unfrozen/
+# ============================================================
+
+#PBS -N sem_jnt_unfr_full
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/semantic_joint_unfrozen_full.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  SEMANTIC JOINT (MSE+CTC): ALL LAYERS UNFROZEN — FULL RUN" | tee -a $LOGFILE
+echo "  All training clips (Hindi + Marathi, ~9169 clips)" | tee -a $LOGFILE
+echo "  Warm start: semantic_mse/best_dev.pt" | tee -a $LOGFILE
+echo "  CTC Head 1 warm: semantic_ctc/best_wer.pt" | tee -a $LOGFILE
+echo "  freeze_layers=0 (ALL 12 layers + conv trainable)" | tee -a $LOGFILE
+echo "  Loss: alpha*MSE(Head2) + (1-alpha)*CTC(Head1)" | tee -a $LOGFILE
+echo "  Head 1 WER tracked during training" | tee -a $LOGFILE
+echo "  Head 2 WER evaluated after training (Phase 2 & 3)" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "  Node: $(hostname)" | tee -a $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# Phase 1: Joint training (MSE+CTC, all layers unfrozen, FULL data)
+python -u experiments/semantic_branch/04_joint_training/step3_semantic_joint_training.py \
+    --freeze_layers 0 \
+    --epochs 30 \
+    --lr 2e-5 \
+    --warmup_steps 1000 \
+    --patience 7 \
+    --alpha_start 0.3 \
+    --grad_accum 4 \
+    --dropout 0.1 \
+    --checkpoint checkpoints/semantic_mse/best_dev.pt \
+    --ctc_checkpoint checkpoints/semantic_ctc/best_wer.pt \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  PHASE 2: HEAD 2 (BPE) EVALUATION ON DEV SET" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# Phase 2: Decode best checkpoint with Head 2 on DEV
+python -u experiments/semantic_branch/02_mse_distillation/step2_semantic_evaluate.py \
+    --checkpoint checkpoints/semantic_joint_unfrozen/best_dev.pt \
+    --split dev \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  PHASE 3: HEAD 2 (BPE) EVALUATION ON TEST SET" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# Phase 3: Decode best checkpoint with Head 2 on TEST
+python -u experiments/semantic_branch/02_mse_distillation/step2_semantic_evaluate.py \
+    --checkpoint checkpoints/semantic_joint_unfrozen/best_dev.pt \
+    --split test \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+echo "  ALL DONE: $(date)" | tee -a $LOGFILE
+echo "  Results: Head 1 WER from training log above" | tee -a $LOGFILE
+echo "  Results: Head 2 WER from Phase 2 (dev) and Phase 3 (test)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
