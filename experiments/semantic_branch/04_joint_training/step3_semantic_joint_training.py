@@ -120,6 +120,8 @@ if args.ctc_only and args.freeze_layers == 0:
     _ckpt_subdir = "semantic_ctc_unfrozen"
 elif args.ctc_only:
     _ckpt_subdir = "semantic_ctc_finetune"
+elif args.freeze_layers == 0:
+    _ckpt_subdir = "semantic_joint_unfrozen"
 else:
     _ckpt_subdir = "semantic_joint"
 CKPT_DIR     = PROJECT_ROOT / "checkpoints" / _ckpt_subdir
