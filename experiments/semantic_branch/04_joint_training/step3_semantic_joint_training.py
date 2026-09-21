@@ -116,7 +116,13 @@ TRAIN_CSV    = ASER_ROOT / "splits" / "asr_train.csv"
 DEV_CSV      = ASER_ROOT / "splits" / "asr_dev.csv"
 VOCAB_PATH   = ASER_ROOT / "vocab.json"
 TEACHER_LOGITS_DIR = PROJECT_ROOT / "teacher_logits"
-CKPT_DIR     = PROJECT_ROOT / "checkpoints" / ("semantic_ctc_finetune" if args.ctc_only else "semantic_joint")
+if args.ctc_only and args.freeze_layers == 0:
+    _ckpt_subdir = "semantic_ctc_unfrozen"
+elif args.ctc_only:
+    _ckpt_subdir = "semantic_ctc_finetune"
+else:
+    _ckpt_subdir = "semantic_joint"
+CKPT_DIR     = PROJECT_ROOT / "checkpoints" / _ckpt_subdir
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 SAMPLE_RATE = 16000
@@ -399,18 +405,20 @@ gc.collect()
 # ── Freeze bottom encoder layers ────────────────────────────────────────────
 n_freeze = args.freeze_layers
 n_layers = len(encoder.layers)
-print(f"\n  [FREEZE] Freezing bottom {n_freeze}/{n_layers} encoder layers...")
 
-# Freeze conv layers (always freeze — they're low-level mel processors)
-for param in encoder.conv1.parameters():
-    param.requires_grad = False
-for param in encoder.conv2.parameters():
-    param.requires_grad = False
-
-# Freeze bottom N transformer layers
-for layer in encoder.layers[:n_freeze]:
-    for param in layer.parameters():
+if n_freeze > 0:
+    print(f"\n  [FREEZE] Freezing bottom {n_freeze}/{n_layers} encoder layers + conv layers...")
+    # Freeze conv layers (low-level mel processors)
+    for param in encoder.conv1.parameters():
         param.requires_grad = False
+    for param in encoder.conv2.parameters():
+        param.requires_grad = False
+    # Freeze bottom N transformer layers
+    for layer in encoder.layers[:n_freeze]:
+        for param in layer.parameters():
+            param.requires_grad = False
+else:
+    print(f"\n  [UNFROZEN] All {n_layers} encoder layers + conv layers trainable")
 
 # Count params
 total_params = sum(p.numel() for p in encoder.parameters())
@@ -591,17 +599,26 @@ else:
     print(f"  CTC loss: skipped (empty/long target)")
 
 # Verify gradients flow correctly
-frozen_grads = sum(1 for p in encoder.layers[:n_freeze].parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+if n_freeze > 0:
+    frozen_grads = sum(1 for p in encoder.layers[:n_freeze].parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+else:
+    frozen_grads = 0
 unfrozen_grads = sum(1 for p in encoder.layers[n_freeze:].parameters() if p.grad is not None and p.grad.abs().sum() > 0)
 head1_grads = sum(1 for p in ctc_head_char.parameters() if p.grad is not None)
 if not args.ctc_only:
     head2_grads = sum(1 for p in ctc_head_hi.parameters() if p.grad is not None) + \
                   sum(1 for p in ctc_head_mr.parameters() if p.grad is not None)
-    print(f"  Gradients: frozen_layers={frozen_grads}(should=0) | "
-          f"unfrozen_layers={unfrozen_grads}>0 ✓ | head1={head1_grads}>0 ✓ | head2={head2_grads}>0 ✓")
+    if n_freeze > 0:
+        print(f"  Gradients: frozen_layers={frozen_grads}(should=0) | "
+              f"unfrozen_layers={unfrozen_grads}>0 | head1={head1_grads}>0 | head2={head2_grads}>0")
+    else:
+        print(f"  Gradients: all_layers={unfrozen_grads}>0 | head1={head1_grads}>0 | head2={head2_grads}>0")
 else:
-    print(f"  Gradients: frozen_layers={frozen_grads}(should=0) | "
-          f"unfrozen_layers={unfrozen_grads}>0 ✓ | head1={head1_grads}>0 ✓")
+    if n_freeze > 0:
+        print(f"  Gradients: frozen_layers={frozen_grads}(should=0) | "
+              f"unfrozen_layers={unfrozen_grads}>0 | head1={head1_grads}>0")
+    else:
+        print(f"  Gradients: all_layers={unfrozen_grads}>0 | head1={head1_grads}>0")
 
 encoder.zero_grad()
 if not args.ctc_only:
