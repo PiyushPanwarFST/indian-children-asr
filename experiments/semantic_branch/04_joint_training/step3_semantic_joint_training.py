@@ -205,7 +205,8 @@ print("=" * 70)
 def load_clips_from_csv(csv_path, split="train", max_clips=None, ctc_only=False):
     """
     Load clips from CSV.
-    - ctc_only=False: Hindi/Marathi only, requires teacher logits (for MSE).
+    - ctc_only=False: All languages loaded. Hindi/Marathi get teacher logits (for MSE).
+                      English included for CTC-only training (no MSE).
     - ctc_only=True:  All languages, no teacher logits needed.
     """
     clips = []
@@ -221,11 +222,6 @@ def load_clips_from_csv(csv_path, split="train", max_clips=None, ctc_only=False)
                 skipped_lang += 1
                 continue
 
-            # In joint mode, skip English (no teacher logits for English)
-            if not ctc_only and lang_code == "en":
-                skipped_lang += 1
-                continue
-
             audio_path = row["audio_path"]
             if not os.path.isabs(audio_path):
                 audio_path = str(ASER_ROOT / audio_path)
@@ -235,9 +231,9 @@ def load_clips_from_csv(csv_path, split="train", max_clips=None, ctc_only=False)
             basename = os.path.splitext(os.path.basename(audio_path))[0]
             clip_uid = f"{child_id}_{basename}" if child_id else basename
 
-            # Teacher logits only needed in joint mode
+            # Teacher logits only needed for Hindi/Marathi in joint mode
             logit_path = None
-            if not ctc_only:
+            if not ctc_only and lang_code in ("hi", "mr"):
                 logit_path = TEACHER_LOGITS_DIR / split / f"{clip_uid}.pt"
                 if not logit_path.exists():
                     skipped_no_logits += 1
