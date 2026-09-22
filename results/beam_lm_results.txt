@@ -1,0 +1,83 @@
+Beam Search + KenLM Language Model Decoding — TEST SET Results
+===============================================================
+Date: 2026-09-22
+LM: 5-gram KenLM trained on ASER training transcripts (499 unique words)
+Decoder: pyctcdecode (beam_width=100, alpha=1.0, beta=2.0)
+Test clips: 1695 (782 Hindi, 366 Marathi, 547 English)
+
+===============================================================
+ACOUSTIC BRANCH (Kid-Whisper Distillation + Joint Training)
+===============================================================
+Checkpoint: checkpoints/joint/joint_best_wer.pt (epoch 10, dev WER 16.80%)
+
+Language        N     Greedy WER    Beam+LM WER    Improvement
+---------- ----- ------------- --------------- ---------------
+Hindi        782       17.83%         12.44%         -5.39%
+Marathi      366       26.11%         18.64%         -7.47%
+English      547       17.33%          9.95%         -7.37%
+---------- ----- ------------- --------------- ---------------
+Overall     1695       19.96%         13.85%         -6.11%
+
+===============================================================
+SEMANTIC BRANCH (IndicConformer Distillation + CTC-Only Unfrozen)
+===============================================================
+Checkpoint: checkpoints/semantic_ctc_unfrozen/best_dev.pt (epoch 18, dev WER 12.77%)
+
+Language        N     Greedy WER    Beam+LM WER    Improvement
+---------- ----- ------------- --------------- ---------------
+Hindi        782       12.81%         10.59%         -2.22%
+Marathi      366       20.83%         17.19%         -3.63%
+English      547       11.88%          7.82%         -4.06%
+---------- ----- ------------- --------------- ---------------
+Overall     1695       14.83%         12.09%         -2.75%
+
+===============================================================
+COMBINED BRANCH (Dual-Encoder Gated Fusion, Unfrozen)
+===============================================================
+Checkpoint: checkpoints/combined_unfrozen/best_wer_e21.pt (epoch 21, dev WER 12.51%)
+
+Language        N     Greedy WER    Beam+LM WER    Improvement
+---------- ----- ------------- --------------- ---------------
+Hindi        782       12.83%         11.12%         -1.71%
+Marathi      366       19.83%         17.27%         -2.56%
+English      547       13.48%         10.16%         -3.32%
+---------- ----- ------------- --------------- ---------------
+Overall     1695       14.57%         12.65%         -1.92%
+
+===============================================================
+SUMMARY TABLE — ALL SYSTEMS WITH BEAM+LM
+===============================================================
+
+System                              Greedy WER    Beam+LM WER
+--------------------------------- ------------- ---------------
+Acoustic branch (244M)                 19.96%         13.85%
+Semantic branch (244M)                 14.83%         12.09%
+Combined branch (old, ~490M)           14.57%         12.65%
+Fine-tuned Whisper baseline            14.30%            —
+--------------------------------- ------------- ---------------
+
+Key findings:
+  1. Beam+LM improves ALL branches significantly (1.9% to 6.1% absolute)
+  2. Semantic branch alone (12.09%) beats the combined branch (12.65%)
+     because the semantic encoder was further improved with CTC-only
+     unfrozen training (Exp 3), while combined branch still uses the
+     older semantic MSE encoder
+  3. ALL branches with beam+LM beat the fine-tuned Whisper baseline (14.30%)
+  4. Combined V2 (training now) uses the improved semantic encoder —
+     expected to achieve 10-11% WER with beam+LM
+
+===============================================================
+COMPARISON WITH FINE-TUNED WHISPER BASELINE (14.30%)
+===============================================================
+
+System                    Overall WER    vs Baseline    Relative
+----------------------- ------------- -------------- ----------
+Acoustic + Beam+LM          13.85%        -0.45%       -3.1%
+Semantic + Beam+LM          12.09%        -2.21%      -15.5%
+Combined + Beam+LM          12.65%        -1.65%      -11.5%
+Combined V2 + Beam+LM       (pending)       —            —
+----------------------- ------------- -------------- ----------
+
+Note: Beam+LM is applied only at inference time (no retraining needed).
+      The KenLM is a simple 5-gram model trained on ASER transcripts.
+      This is standard practice for CTC-based ASR systems.

@@ -10,7 +10,7 @@
 #PBS -N combined_v2
 #PBS -q gpu-ext
 #PBS -l select=1:ncpus=40
-#PBS -l walltime=24:00:00
+#PBS -l walltime=72:00:00
 #PBS -j oe
 
 cd /iitjfs/home/2025rcs1026/Indain_children_spech
@@ -34,7 +34,7 @@ echo "============================================================" | tee -a $LO
 python -u experiments/combined_branch/01_feature_fusion/step1_combined_training.py \
     --acoustic_ckpt checkpoints/joint/joint_best_wer.pt \
     --semantic_ckpt checkpoints/semantic_ctc_unfrozen/best_dev.pt \
-    --epochs 35 \
+    --epochs 45 \
     --lr 1e-3 \
     --encoder_lr 1e-5 \
     --warmup_steps 500 \
