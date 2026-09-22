@@ -1,0 +1,60 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: Beam+LM Evaluation — Acoustic + Semantic Branches
+# ============================================================
+# Runs beam search + KenLM on both branches (test set)
+# Submit: qsub hpc/run_beam_eval_all.pbs
+# ============================================================
+
+#PBS -N beam_eval
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/beam_eval.log"
+
+echo "============================================================" | tee $LOGFILE
+echo "  BEAM+LM EVALUATION — ALL BRANCHES" | tee -a $LOGFILE
+echo "  Started: $(date)" | tee -a $LOGFILE
+echo "============================================================" | tee -a $LOGFILE
+
+# ── 1. Acoustic Branch (joint checkpoint) ────────────────────────
+echo "" | tee -a $LOGFILE
+echo "  [1/2] ACOUSTIC BRANCH" | tee -a $LOGFILE
+echo "  Checkpoint: checkpoints/joint/joint_best_wer.pt" | tee -a $LOGFILE
+echo "" | tee -a $LOGFILE
+
+python -u scripts/lm/eval_beam_full.py \
+    --checkpoint checkpoints/joint/joint_best_wer.pt \
+    --lm_path models/lm/5gram.arpa \
+    --alpha 1.0 --beta 2.0 \
+    --beam_width 100 \
+    --split test \
+    2>&1 | tee -a $LOGFILE
+
+# ── 2. Semantic Branch (CTC unfrozen checkpoint) ────────────────
+echo "" | tee -a $LOGFILE
+echo "  [2/2] SEMANTIC BRANCH" | tee -a $LOGFILE
+echo "  Checkpoint: checkpoints/semantic_ctc_unfrozen/best_dev.pt" | tee -a $LOGFILE
+echo "" | tee -a $LOGFILE
+
+python -u scripts/lm/eval_beam_semantic.py \
+    --checkpoint checkpoints/semantic_ctc_unfrozen/best_dev.pt \
+    --lm_path models/lm/5gram.arpa \
+    --alpha 1.0 --beta 2.0 \
+    --beam_width 100 \
+    --split test \
+    2>&1 | tee -a $LOGFILE
+
+echo "" | tee -a $LOGFILE
+echo "  ALL DONE: $(date)" | tee -a $LOGFILE
