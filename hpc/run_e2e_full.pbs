@@ -1,0 +1,53 @@
+#!/bin/bash
+# ============================================================
+# PBS Job: End-to-End Dual-Encoder FULL RUN (40 epochs, all clips)
+# ============================================================
+# 5-day training — submit only after test run succeeds.
+# Submit: qsub hpc/run_e2e_full.pbs
+# ============================================================
+
+#PBS -N e2e_full
+#PBS -q gpu-ext
+#PBS -l select=1:ncpus=40
+#PBS -l walltime=120:00:00
+#PBS -j oe
+
+cd /iitjfs/home/2025rcs1026/Indain_children_spech
+
+module load codes/anaconda3-2023.09
+source activate children_asr
+
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/e2e_full.log"
+
+echo "============================================================" > $LOGFILE
+echo "  END-TO-END DUAL-ENCODER FULL RUN" >> $LOGFILE
+echo "  Clips: ALL | Epochs: 40 | Vanilla Whisper Small init" >> $LOGFILE
+echo "  Node: $(hostname)" >> $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'NO GPU')" >> $LOGFILE
+echo "  Started: $(date)" >> $LOGFILE
+echo "============================================================" >> $LOGFILE
+
+python -u experiments/end_to_end/e2e_training.py \
+    --epochs 40 \
+    --patience 10 \
+    --encoder_lr 3e-5 \
+    --fusion_lr 1e-3 \
+    --warmup_steps 1000 \
+    --grad_accum 4 \
+    --grad_checkpoint \
+    --specaugment \
+    --dropout 0.1 \
+    --w_ctc 0.3 \
+    --w_acoustic 0.5 \
+    --w_semantic 0.3 \
+    --w_ortho 0.01 \
+    >> $LOGFILE 2>&1
+
+EXIT_CODE=$?
+echo "" >> $LOGFILE
+echo "  EXIT CODE: $EXIT_CODE" >> $LOGFILE
+echo "  DONE: $(date)" >> $LOGFILE
