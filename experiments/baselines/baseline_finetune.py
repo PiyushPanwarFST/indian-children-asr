@@ -97,6 +97,12 @@ parser.add_argument("--label_smoothing", type=float, default=0.0,
                     help="Label smoothing for cross-entropy loss")
 parser.add_argument("--grad_checkpoint", action="store_true",
                     help="Enable gradient checkpointing (saves memory)")
+parser.add_argument("--grad_accum", type=int, default=1,
+                    help="Gradient accumulation steps (effective batch size)")
+parser.add_argument("--freeze_encoder", action="store_true",
+                    help="Freeze encoder (only train decoder)")
+parser.add_argument("--specaugment", action="store_true",
+                    help="Apply SpecAugment to mel spectrograms")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--resume", type=str, default=None,
                     help="Resume from checkpoint path")
@@ -287,13 +293,27 @@ if args.dropout > 0:
 
 model.train()
 
+# Freeze encoder if requested (standard for small datasets)
+if args.freeze_encoder:
+    for param in model.model.encoder.parameters():
+        param.requires_grad = False
+    model.model.encoder.eval()
+    print(f"  Encoder: FROZEN (not trainable)")
+
 total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 encoder_params = sum(p.numel() for p in model.model.encoder.parameters())
 decoder_params = sum(p.numel() for p in model.model.decoder.parameters())
 
-print(f"  Total params:   {total_params:,} (ALL UNFROZEN)")
-print(f"    Encoder:      {encoder_params:,}")
-print(f"    Decoder:      {decoder_params:,}")
+if args.freeze_encoder:
+    print(f"  Total params:   {total_params:,}")
+    print(f"  Trainable:      {trainable_params:,} (decoder only)")
+    print(f"    Encoder:      {encoder_params:,} (FROZEN)")
+    print(f"    Decoder:      {decoder_params:,} (TRAINABLE)")
+else:
+    print(f"  Total params:   {total_params:,} (ALL UNFROZEN)")
+    print(f"    Encoder:      {encoder_params:,}")
+    print(f"    Decoder:      {decoder_params:,}")
 
 if args.grad_checkpoint:
     model.gradient_checkpointing_enable()
@@ -375,6 +395,23 @@ def get_forced_decoder_ids(language):
     return forced_ids
 
 
+def apply_spec_augment(mel_features):
+    """
+    Apply SpecAugment to mel spectrogram features.
+    Standard regularization for ASR — masks random frequency bands and time steps.
+    Input shape: (1, 80, T) where 80 = mel bins, T = time frames
+    """
+    augmented = mel_features.clone()
+    freq_mask = torchaudio.transforms.FrequencyMasking(freq_mask_param=15)
+    time_mask = torchaudio.transforms.TimeMasking(time_mask_param=50)
+    # Apply 2 frequency masks and 2 time masks
+    augmented = freq_mask(augmented)
+    augmented = freq_mask(augmented)
+    augmented = time_mask(augmented)
+    augmented = time_mask(augmented)
+    return augmented
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 4: Component verification
 # ══════════════════════════════════════════════════════════════════════════════
@@ -432,10 +469,11 @@ print("=" * 70)
 print("STEP 5: Training setup")
 print("=" * 70)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+trainable_param_list = [p for p in model.parameters() if p.requires_grad]
+optimizer = torch.optim.AdamW(trainable_param_list, lr=args.lr, weight_decay=0.01)
 
 num_epochs = args.epochs
-total_steps_est = len(train_clips) * num_epochs
+total_steps_est = (len(train_clips) * num_epochs) // args.grad_accum
 warmup_steps = min(args.warmup_steps, total_steps_est // 4)
 
 
@@ -460,8 +498,18 @@ if args.resume:
 
 print(f"  Optimizer: AdamW (lr={args.lr}, wd=0.01)")
 print(f"  Scheduler: linear warmup ({warmup_steps} steps) + cosine decay")
-print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)}")
-print(f"  Total trainable: {total_params:,} params (FULL encoder + decoder)")
+print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)} | Grad accum: {args.grad_accum}")
+print(f"  Effective batch size: {args.grad_accum}")
+n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"  Trainable: {n_trainable:,} params")
+if args.freeze_encoder:
+    print(f"  Encoder: FROZEN")
+if args.specaugment:
+    print(f"  SpecAugment: ON (2 freq masks ≤15, 2 time masks ≤50)")
+if args.dropout > 0:
+    print(f"  Dropout: {args.dropout}")
+if args.label_smoothing > 0:
+    print(f"  Label smoothing: {args.label_smoothing}")
 print(f"  Training method: Seq2Seq with teacher forcing")
 if args.patience > 0:
     print(f"  Early stopping: patience={args.patience} (on dev WER)")
@@ -576,6 +624,8 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
     pbar = tqdm(train_clips, desc=f"Epoch {epoch}",
                 unit="clip", bar_format="{l_bar}{bar:30}{r_bar}")
 
+    optimizer.zero_grad()
+
     for i, clip in enumerate(pbar):
         try:
             # ── Load audio ──
@@ -587,6 +637,10 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             # ── Mel features ──
             mel = feat_extractor(audio_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
             input_features = mel.input_features.to(DEVICE)
+
+            # ── SpecAugment (training only) ──
+            if args.specaugment:
+                input_features = apply_spec_augment(input_features)
 
             # ── Prepare labels (BPE tokenized ground truth) ──
             labels = prepare_labels(clip["ground_truth"], clip["language"])
@@ -617,15 +671,19 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
                 skipped += 1
                 continue
 
-            # ── Backward + step ──
-            optimizer.zero_grad()
+            # ── Backward (accumulate gradients) ──
+            loss = loss / args.grad_accum
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            scheduler.step()
-            global_step += 1
 
-            ep_losses.append(loss.item())
+            # ── Step optimizer every grad_accum clips ──
+            if (i + 1) % args.grad_accum == 0 or (i + 1) == len(train_clips):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            ep_losses.append(loss.item() * args.grad_accum)  # log unscaled loss
 
             # ── Cleanup ──
             if DEVICE == "cuda":

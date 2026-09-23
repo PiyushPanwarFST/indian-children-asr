@@ -1,8 +1,13 @@
 #!/bin/bash
 # ============================================================
-# PBS Job: Baseline V2 — Whisper Small Fine-tuning with Regularization
+# PBS Job: Baseline V2 — Whisper Small Fine-tuning (Fair, Regularized)
 # ============================================================
-# Tighter training: higher dropout, label smoothing, lower patience
+# Standard fine-tuning with proper regularization:
+#   - SpecAugment (2 freq + 2 time masks)
+#   - Dropout 0.1
+#   - Label smoothing 0.1
+#   - Gradient accumulation 16 (effective batch size 16)
+#   - Encoder frozen (standard for small datasets)
 # Submit: qsub hpc/run_baseline_v2.pbs
 # ============================================================
 
@@ -25,18 +30,23 @@ LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_v2.log"
 
 echo "============================================================" | tee $LOGFILE
 echo "  BASELINE V2: Whisper Small Fine-tuning (Regularized)" | tee -a $LOGFILE
-echo "  Dropout: 0.15, Label Smoothing: 0.1" | tee -a $LOGFILE
+echo "  SpecAugment: ON | Dropout: 0.1 | Label Smoothing: 0.1" | tee -a $LOGFILE
+echo "  Grad Accum: 16 | Encoder: FROZEN" | tee -a $LOGFILE
 echo "  Started: $(date)" | tee -a $LOGFILE
 echo "============================================================" | tee -a $LOGFILE
 
 python -u experiments/baselines/baseline_finetune.py \
     --model whisper-small \
-    --epochs 20 \
+    --epochs 15 \
     --patience 5 \
-    --lr 5e-6 \
-    --warmup_steps 500 \
-    --dropout 0.15 \
+    --lr 1e-5 \
+    --warmup_steps 200 \
+    --dropout 0.1 \
     --label_smoothing 0.1 \
+    --grad_accum 16 \
+    --freeze_encoder \
+    --specaugment \
+    --grad_checkpoint \
     2>&1 | tee -a $LOGFILE
 
 echo "" | tee -a $LOGFILE
