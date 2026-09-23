@@ -28,12 +28,15 @@ export PYTHONUNBUFFERED=1
 
 LOGFILE="/iitjfs/home/2025rcs1026/Indain_children_spech/hpc/baseline_v2.log"
 
-echo "============================================================" | tee $LOGFILE
-echo "  BASELINE V2: Whisper Small Fine-tuning (Regularized)" | tee -a $LOGFILE
-echo "  SpecAugment: ON | Dropout: 0.1 | Label Smoothing: 0.1" | tee -a $LOGFILE
-echo "  Grad Accum: 16 | Encoder: FROZEN" | tee -a $LOGFILE
-echo "  Started: $(date)" | tee -a $LOGFILE
-echo "============================================================" | tee -a $LOGFILE
+echo "============================================================" > $LOGFILE
+echo "  BASELINE V2: Whisper Small Fine-tuning (Regularized)" >> $LOGFILE
+echo "  SpecAugment: ON | Dropout: 0.1 | Label Smoothing: 0.1" >> $LOGFILE
+echo "  Grad Accum: 16 | Encoder: FROZEN" >> $LOGFILE
+echo "  Node: $(hostname)" >> $LOGFILE
+echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'NO GPU')" >> $LOGFILE
+echo "  CUDA available: $(python -c 'import torch; print(torch.cuda.is_available())' 2>&1)" >> $LOGFILE
+echo "  Started: $(date)" >> $LOGFILE
+echo "============================================================" >> $LOGFILE
 
 python -u experiments/baselines/baseline_finetune.py \
     --model whisper-small \
@@ -47,7 +50,9 @@ python -u experiments/baselines/baseline_finetune.py \
     --freeze_encoder \
     --specaugment \
     --grad_checkpoint \
-    2>&1 | tee -a $LOGFILE
+    >> $LOGFILE 2>&1
 
-echo "" | tee -a $LOGFILE
-echo "  DONE: $(date)" | tee -a $LOGFILE
+EXIT_CODE=$?
+echo "" >> $LOGFILE
+echo "  EXIT CODE: $EXIT_CODE" >> $LOGFILE
+echo "  DONE: $(date)" >> $LOGFILE
