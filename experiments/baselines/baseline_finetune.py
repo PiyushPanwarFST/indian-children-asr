@@ -91,6 +91,10 @@ parser.add_argument("--warmup_steps", type=int, default=500)
 parser.add_argument("--max_audio_sec", type=float, default=30.0)
 parser.add_argument("--patience", type=int, default=7,
                     help="Early stopping patience on dev WER (0=disabled)")
+parser.add_argument("--dropout", type=float, default=0.0,
+                    help="Override model dropout (0.0=use model default)")
+parser.add_argument("--label_smoothing", type=float, default=0.0,
+                    help="Label smoothing for cross-entropy loss")
 parser.add_argument("--grad_checkpoint", action="store_true",
                     help="Enable gradient checkpointing (saves memory)")
 parser.add_argument("--seed", type=int, default=42)
@@ -269,6 +273,18 @@ model = WhisperForConditionalGeneration.from_pretrained(HF_ID).to(DEVICE)
 # ALL parameters unfrozen
 for param in model.parameters():
     param.requires_grad = True
+
+# Override dropout if specified
+if args.dropout > 0:
+    model.config.dropout = args.dropout
+    model.config.attention_dropout = args.dropout
+    model.config.activation_dropout = args.dropout
+    # Apply to all dropout layers in the model
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = args.dropout
+    print(f"  Dropout overridden to: {args.dropout}")
+
 model.train()
 
 total_params = sum(p.numel() for p in model.parameters())
@@ -577,11 +593,25 @@ for epoch in range(start_epoch + 1, start_epoch + num_epochs + 1):
             labels = labels.unsqueeze(0).to(DEVICE)
 
             # ── Forward pass (teacher forcing, cross-entropy loss) ──
-            outputs = model(
-                input_features=input_features,
-                labels=labels,
-            )
-            loss = outputs.loss
+            if args.label_smoothing > 0:
+                outputs = model(
+                    input_features=input_features,
+                    decoder_input_ids=labels[:, :-1],
+                )
+                logits = outputs.logits
+                target = labels[:, 1:]
+                loss = torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    target.reshape(-1),
+                    ignore_index=-100,
+                    label_smoothing=args.label_smoothing,
+                )
+            else:
+                outputs = model(
+                    input_features=input_features,
+                    labels=labels,
+                )
+                loss = outputs.loss
 
             if torch.isnan(loss) or torch.isinf(loss):
                 skipped += 1
