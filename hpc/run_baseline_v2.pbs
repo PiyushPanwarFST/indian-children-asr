@@ -34,7 +34,6 @@ echo "  SpecAugment: ON | Dropout: 0.1 | Label Smoothing: 0.1" >> $LOGFILE
 echo "  Grad Accum: 16 | Encoder: FROZEN" >> $LOGFILE
 echo "  Node: $(hostname)" >> $LOGFILE
 echo "  GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'NO GPU')" >> $LOGFILE
-echo "  CUDA available: $(python -c 'import torch; print(torch.cuda.is_available())' 2>&1)" >> $LOGFILE
 echo "  Started: $(date)" >> $LOGFILE
 echo "============================================================" >> $LOGFILE
 
