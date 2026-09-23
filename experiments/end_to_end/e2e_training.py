@@ -35,7 +35,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
+from functools import partial
+from tqdm import tqdm as _tqdm
+# Force tqdm to stdout so it appears in PBS log files (PBS captures stdout, not stderr)
+tqdm = partial(_tqdm, file=sys.stdout)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ARGUMENTS
@@ -541,7 +544,7 @@ print(f"  CTC head:  {tuple(char_logits.shape)}")
 # Orthogonality
 a_mean = a_feat[:, :real_frames, :].mean(dim=1)
 b_mean = b_feat[:, :real_frames, :].mean(dim=1)
-cos_sim = F.cosine_similarity(a_mean, b_mean).abs()
+cos_sim = F.cosine_similarity(a_mean, b_mean).abs().mean()
 print(f"  Encoder cosine sim: {cos_sim.item():.4f} (will decrease as encoders specialize)")
 
 # CTC loss + backward
