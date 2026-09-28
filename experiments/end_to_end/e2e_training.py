@@ -83,6 +83,10 @@ parser.add_argument("--verify", action="store_true",
                     help="Quick verification with 100 clips, 2 epochs")
 parser.add_argument("--resume", type=str, default=None,
                     help="Resume from checkpoint path (relative to project root)")
+parser.add_argument("--fresh_optimizer", action="store_true",
+                    help="When resuming, create fresh optimizer+scheduler (warm restart LR)")
+parser.add_argument("--fixed_weights", action="store_true",
+                    help="Disable loss weight schedule — use --w_ctc/w_acoustic/w_semantic as constant weights")
 parser.add_argument("--grad_checkpoint", action="store_true",
                     help="Enable gradient checkpointing (saves ~40% memory)")
 parser.add_argument("--specaugment", action="store_true", default=True,
@@ -471,11 +475,11 @@ def align_teacher_to_student(teacher_logits, student_frames):
 def get_loss_weights(epoch, total_epochs):
     """
     Scheduled loss weights: KD-heavy early → CTC-heavy late.
-
-    Phase 1 (1-25%):  w_ctc=0.3, w_acou=0.5, w_sem=0.3  (KD-heavy)
-    Phase 2 (25-62%): w_ctc=0.5, w_acou=0.3, w_sem=0.2  (balanced)
-    Phase 3 (62-100%):w_ctc=0.7, w_acou=0.2, w_sem=0.1  (CTC-heavy)
+    If --fixed_weights is set, always return CLI values (for resume runs).
     """
+    if args.fixed_weights:
+        return args.w_ctc, args.w_acoustic, args.w_semantic
+
     progress = epoch / total_epochs
     if progress <= 0.25:
         return args.w_ctc, args.w_acoustic, args.w_semantic
@@ -624,8 +628,8 @@ def lr_lambda(step):
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-# Restore optimizer/scheduler if resuming
-if args.resume:
+# Restore optimizer/scheduler if resuming (unless --fresh_optimizer for warm restart)
+if args.resume and not args.fresh_optimizer:
     resume_ckpt = torch.load(PROJECT_ROOT / args.resume, map_location=DEVICE, weights_only=False)
     if "optimizer_state_dict" in resume_ckpt:
         optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
@@ -633,6 +637,8 @@ if args.resume:
         scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
     del resume_ckpt
     gc.collect()
+elif args.resume and args.fresh_optimizer:
+    print(f"  FRESH OPTIMIZER: warm restart LR (encoder={args.encoder_lr}, fusion={args.fusion_lr})")
 
 ctc_loss_fn = nn.CTCLoss(blank=BLANK_IDX, zero_infinity=True)
 
@@ -640,7 +646,10 @@ print(f"  Optimizer: AdamW (encoder_lr={args.encoder_lr}, fusion_lr={args.fusion
 print(f"  Scheduler: linear warmup ({warmup_steps} steps) → cosine decay")
 print(f"  Epochs: {num_epochs} | Clips: {len(train_clips)} | Grad accum: {args.grad_accum}")
 print(f"  Steps/epoch: ~{steps_per_epoch} | Total: ~{total_steps_est}")
-print(f"  Loss weights (initial): CTC={args.w_ctc} | Acoustic={args.w_acoustic} | Semantic={args.w_semantic} | Ortho={args.w_ortho}")
+if args.fixed_weights:
+    print(f"  Loss weights (FIXED): CTC={args.w_ctc} | Acoustic={args.w_acoustic} | Semantic={args.w_semantic} | Ortho={args.w_ortho}")
+else:
+    print(f"  Loss weights (scheduled): CTC={args.w_ctc} | Acoustic={args.w_acoustic} | Semantic={args.w_semantic} | Ortho={args.w_ortho}")
 if args.patience > 0:
     print(f"  Early stopping: patience={args.patience}")
 print()
